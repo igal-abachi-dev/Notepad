@@ -4,9 +4,10 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Data.Core;
 using Avalonia.Data.Core.Plugins;
 using Avalonia.Markup.Xaml;
-using AvaloniaNotePad.ViewModels;
-using AvaloniaNotePad.Views;
 using System.IO;
+using NotepadAvalonia.Services;
+using NotepadAvalonia.ViewModels;
+using NotepadAvalonia.Views;
 
 namespace AvaloniaNotePad;
 
@@ -26,7 +27,11 @@ public partial class App : Application
             DisableAvaloniaDataAnnotationValidation();
             desktop.MainWindow = new MainWindow
             {
-                DataContext = new MainWindowViewModel(),
+                DataContext = new MainWindowViewModel(
+                    new FileService(),
+                    new SearchService(),
+                    new SettingsService()
+                    ),
             };
 
             // Handle command line arguments (open files)
@@ -37,7 +42,7 @@ public partial class App : Application
                 {
                     if (System.IO.File.Exists(arg))
                     {
-                        _ = mainWindow?.ViewModel.OpenFileAsync(arg);
+                        _ = mainWindow?.ViewModel.LoadFileAsync(arg);
                     }
                 }
             }

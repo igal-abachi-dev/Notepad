@@ -1,644 +1,494 @@
+using AvaloniaEdit.Document;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using NotepadAvalonia.Models;
+using NotepadAvalonia.Services;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Linq;
-using System.Runtime.CompilerServices;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection.Metadata;
+using System.Text;
 using System.Threading.Tasks;
-using System.Windows.Input;
-using AvaloniaNotePad.Models;
-using AvaloniaNotePad.Services;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using NotepadAvalonia.Views;
+using MsBox.Avalonia;
+using MsBox.Avalonia.Enums;
 
-namespace AvaloniaNotePad.ViewModels;
+namespace NotepadAvalonia.ViewModels;
 
 /// <summary>
-/// Main ViewModel containing all Notepad application logic
+/// Main ViewModel - maps to Notepad's global state and command handlers
 /// </summary>
-public class MainWindowViewModel : INotifyPropertyChanged
-//    public partial class MainWindowViewModel : ViewModelBase
+public partial class MainWindowViewModel : ObservableObject
 {
     private readonly FileService _fileService;
-    private readonly FindReplaceService _findReplaceService;
+    private readonly SearchService _searchService;
     private readonly SettingsService _settingsService;
-    
-    private TabViewModel? _selectedTab;
-    private bool _showFindReplace;
-    private bool _isReplaceMode;
-    private string _findText = string.Empty;
-    private string _replaceText = string.Empty;
-    private string _statusMessage = string.Empty;
-    private bool _wordWrap;
-    private bool _showLineNumbers = true;
-    private bool _showStatusBar = true;
-    private AppTheme _theme = AppTheme.System;
 
-    // Commands (initialized by the view)
-    public ICommand NewDocumentCommand { get; set; } = null!;
-    public ICommand NewWindowCommand { get; set; } = null!;
-    public ICommand OpenCommand { get; set; } = null!;
-    public ICommand SaveCommand { get; set; } = null!;
-    public ICommand SaveAsCommand { get; set; } = null!;
-    public ICommand CloseTabCommand { get; set; } = null!;
-    public ICommand ExitCommand { get; set; } = null!;
-    public ICommand UndoCommand { get; set; } = null!;
-    public ICommand RedoCommand { get; set; } = null!;
-    public ICommand CutCommand { get; set; } = null!;
-    public ICommand CopyCommand { get; set; } = null!;
-    public ICommand PasteCommand { get; set; } = null!;
-    public ICommand DeleteCommand { get; set; } = null!;
-    public ICommand SelectAllCommand { get; set; } = null!;
-    public ICommand InsertDateTimeCommand { get; set; } = null!;
-    public ICommand FindCommand { get; set; } = null!;
-    public ICommand ReplaceCommand { get; set; } = null!;
-    public ICommand FindNextCommand { get; set; } = null!;
-    public ICommand FindPreviousCommand { get; set; } = null!;
-    public ICommand ReplaceCurrentCommand { get; set; } = null!;
-    public ICommand ReplaceAllCommand { get; set; } = null!;
-    public ICommand HideFindReplaceCommand { get; set; } = null!;
-    public ICommand GoToLineCommand { get; set; } = null!;
-    public ICommand ZoomInCommand { get; set; } = null!;
-    public ICommand ZoomOutCommand { get; set; } = null!;
-    public ICommand ResetZoomCommand { get; set; } = null!;
-    public ICommand ToggleWordWrapCommand { get; set; } = null!;
-    public ICommand ToggleLineNumbersCommand { get; set; } = null!;
-    public ICommand ToggleStatusBarCommand { get; set; } = null!;
-    public ICommand FontCommand { get; set; } = null!;
-    public ICommand SetEncodingCommand { get; set; } = null!;
-    public ICommand SetLineEndingCommand { get; set; } = null!;
-    public ICommand AboutCommand { get; set; } = null!;
-    public ICommand PrintCommand { get; set; } = null!;
-    public ICommand PageSetupCommand { get; set; } = null!;
+    [ObservableProperty]
+    private DocumentModel _document = new();
 
-    public MainWindowViewModel()
+    [ObservableProperty]
+    private EditorSettings _settings = new();
+
+    [ObservableProperty]
+    private SearchSettings _searchSettings = new();
+
+    [ObservableProperty]
+    private TextDocument _textDocument = new("hello world".ToCharArray());
+
+    [ObservableProperty]
+    private int _caretLine = 1;
+
+    [ObservableProperty]
+    private int _caretColumn = 1;
+
+    [ObservableProperty]
+    private string _statusText = "Ready";
+
+    [ObservableProperty]
+    private string _encodingText = "UTF-8";
+
+    [ObservableProperty]
+    private string _lineEndingText = "CRLF";
+
+    public MainWindowViewModel(
+        FileService fileService,
+        SearchService searchService,
+        SettingsService settingsService)
     {
-        _fileService = new FileService();
-        _findReplaceService = new FindReplaceService();
-        _settingsService = new SettingsService();
-        
-        Tabs = new ObservableCollection<TabViewModel>();
-        
-        // Initialize with settings
-        _ = InitializeAsync();
+        _fileService = fileService;
+        _searchService = searchService;
+        _settingsService = settingsService;
+
+        _settings = _settingsService.LoadEditorSettings();
+        _searchSettings = _settingsService.LoadSearchSettings();
+
+        _textDocument.TextChanged += OnTextChanged;
     }
 
-    private async Task InitializeAsync()
+    private void OnTextChanged(object? sender, EventArgs e)
     {
-        await _settingsService.LoadAsync();
-        ApplySettings();
-        
-        // Start with a new document if no tabs
-        if (Tabs.Count == 0)
-            NewDocument();
-    }
-
-    private void ApplySettings()
-    {
-        var settings = _settingsService.Settings;
-        WordWrap = settings.WordWrap;
-        ShowLineNumbers = settings.ShowLineNumbers;
-        ShowStatusBar = settings.ShowStatusBar;
-        Theme = settings.Theme;
-    }
-
-    // === Collections ===
-    public ObservableCollection<TabViewModel> Tabs { get; }
-
-    public TabViewModel? SelectedTab
-    {
-        get => _selectedTab;
-        set
+        if (!_document.IsModified)
         {
-            if (_selectedTab != value)
+            _document.IsModified = true;
+            OnPropertyChanged(nameof(Document));
+        }
+    }
+
+    // ==================== File Commands ====================
+
+    /// <summary>
+    /// Maps to: Command ID 1, function_14000fe24(1)
+    /// </summary>
+    [RelayCommand]
+    private async Task NewFileAsync()
+    {
+        if (!await CheckSaveChangesAsync()) return;
+
+        _textDocument = new TextDocument();
+        _document = new DocumentModel();
+        UpdateStatus();
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 2, function_140008c18
+    /// </summary>
+    [RelayCommand]
+    public async Task OpenFileAsync()
+    {
+        if (!await CheckSaveChangesAsync()) return;
+
+        // Use Avalonia's file picker
+        var dialog = new OpenFileDialog //todo custom open file dialog
+        {
+            Title = "Open",
+            Filters = new List<FileDialogFilter>
             {
-                _selectedTab = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(HasOpenDocument));
-                OnPropertyChanged(nameof(CanUndo));
-                OnPropertyChanged(nameof(CanRedo));
+                new() { Name = "Text Documents", Extensions = { "txt" } },
+                new() { Name = "All Files", Extensions = { "*" } }
             }
-        }
-    }
-
-    public bool HasOpenDocument => SelectedTab != null;
-
-    // === File Operations ===
-    
-    public void NewDocument()
-    {
-        var tab = new TabViewModel(new Document());
-        Tabs.Add(tab);
-        SelectedTab = tab;
-    }
-
-    public async Task OpenFileAsync(string filePath)
-    {
-        try
-        {
-            // Check if already open
-            var existingTab = Tabs.FirstOrDefault(t => 
-                t.Document.FilePath?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true);
-            if (existingTab != null)
-            {
-                SelectedTab = existingTab;
-                return;
-            }
-
-            var document = await _fileService.OpenFileAsync(filePath);
-            var tab = new TabViewModel(document);
-            Tabs.Add(tab);
-            SelectedTab = tab;
-            
-            _settingsService.Settings.AddRecentFile(filePath);
-            await _settingsService.SaveAsync();
-            
-            StatusMessage = $"Opened {document.FileName}";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error opening file: {ex.Message}";
-            throw;
-        }
-    }
-
-    public async Task<bool> SaveAsync()
-    {
-        if (SelectedTab == null) return false;
-
-        if (SelectedTab.Document.IsNewDocument)
-            return false; // Needs SaveAs dialog
-            
-        try
-        {
-            await _fileService.SaveFileAsync(SelectedTab.Document);
-            SelectedTab.IsModified = false;
-            StatusMessage = $"Saved {SelectedTab.Document.FileName}";
-            return true;
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error saving: {ex.Message}";
-            throw;
-        }
-    }
-
-    public async Task<bool> SaveAsAsync(string filePath)
-    {
-        if (SelectedTab == null) return false;
-        
-        try
-        {
-            await _fileService.SaveFileAsync(SelectedTab.Document, filePath);
-            SelectedTab.IsModified = false;
-            
-            _settingsService.Settings.AddRecentFile(filePath);
-            await _settingsService.SaveAsync();
-            
-            StatusMessage = $"Saved as {SelectedTab.Document.FileName}";
-            return true;
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error saving: {ex.Message}";
-            throw;
-        }
-    }
-
-    public bool CloseTab(TabViewModel tab)
-    {
-        if (tab.IsModified)
-            return false; // Caller should prompt to save
-
-        var index = Tabs.IndexOf(tab);
-        Tabs.Remove(tab);
-        
-        if (Tabs.Count > 0)
-        {
-            SelectedTab = Tabs[Math.Min(index, Tabs.Count - 1)];
-        }
-        else
-        {
-            SelectedTab = null;
-        }
-        
-        return true;
-    }
-
-    public async Task<bool> CloseAllAsync()
-    {
-        foreach (var tab in Tabs.ToList())
-        {
-            if (tab.IsModified)
-                return false; // Has unsaved changes
-        }
-        
-        Tabs.Clear();
-        SelectedTab = null;
-        return true;
-    }
-
-    // === Edit Operations ===
-    
-    // These are typically handled by AvaloniaEdit directly
-    public bool CanUndo => false; // Placeholder - handled by TextEditor
-    public bool CanRedo => false;
-
-    public void Cut()
-    {
-        // Handled by TextEditor control
-    }
-
-    public void Copy()
-    {
-        // Handled by TextEditor control
-    }
-
-    public void Paste()
-    {
-        // Handled by TextEditor control
-    }
-
-    public void Delete()
-    {
-        if (SelectedTab?.HasSelection == true)
-        {
-            SelectedTab.ReplaceSelection(string.Empty);
-        }
-    }
-
-    public void SelectAll()
-    {
-        SelectedTab?.SelectAll();
-    }
-
-    public void InsertDateTime()
-    {
-        SelectedTab?.InsertDateTime();
-    }
-
-    // === Find/Replace ===
-    
-    public bool ShowFindReplace
-    {
-        get => _showFindReplace;
-        set
-        {
-            if (_showFindReplace != value)
-            {
-                _showFindReplace = value;
-                OnPropertyChanged();
-            }
-        }
-    }
-
-    public bool IsReplaceMode
-    {
-        get => _isReplaceMode;
-        set
-        {
-            if (_isReplaceMode != value)
-            {
-                _isReplaceMode = value;
-                OnPropertyChanged();
-            }
-        }
-    }
-
-    public string FindText
-    {
-        get => _findText;
-        set
-        {
-            if (_findText != value)
-            {
-                _findText = value;
-                OnPropertyChanged();
-            }
-        }
-    }
-
-    public string ReplaceText
-    {
-        get => _replaceText;
-        set
-        {
-            if (_replaceText != value)
-            {
-                _replaceText = value;
-                OnPropertyChanged();
-            }
-        }
-    }
-
-    // Search options from settings
-    public bool MatchCase
-    {
-        get => _settingsService.Settings.MatchCase;
-        set
-        {
-            _settingsService.Settings.MatchCase = value;
-            OnPropertyChanged();
-        }
-    }
-
-    public bool MatchWholeWord
-    {
-        get => _settingsService.Settings.MatchWholeWord;
-        set
-        {
-            _settingsService.Settings.MatchWholeWord = value;
-            OnPropertyChanged();
-        }
-    }
-
-    public bool UseRegex
-    {
-        get => _settingsService.Settings.UseRegex;
-        set
-        {
-            _settingsService.Settings.UseRegex = value;
-            OnPropertyChanged();
-        }
-    }
-
-    public void ShowFind()
-    {
-        IsReplaceMode = false;
-        ShowFindReplace = true;
-        
-        // Use selected text as search term
-        var selected = SelectedTab?.GetSelectedText();
-        if (!string.IsNullOrEmpty(selected) && !selected.Contains('\n'))
-            FindText = selected;
-    }
-
-    public void ShowReplace()
-    {
-        IsReplaceMode = true;
-        ShowFindReplace = true;
-        
-        var selected = SelectedTab?.GetSelectedText();
-        if (!string.IsNullOrEmpty(selected) && !selected.Contains('\n'))
-            FindText = selected;
-    }
-
-    public void HideFindReplace()
-    {
-        ShowFindReplace = false;
-    }
-
-    public FindResult? FindNext()
-    {
-        if (SelectedTab == null || string.IsNullOrEmpty(FindText))
-            return null;
-
-        var options = new FindOptions
-        {
-            MatchCase = MatchCase,
-            MatchWholeWord = MatchWholeWord,
-            UseRegex = UseRegex,
-            WrapAround = true
         };
 
-        var startIndex = SelectedTab.CaretOffset;
-        if (SelectedTab.SelectionLength > 0)
-            startIndex = SelectedTab.SelectionStart + SelectedTab.SelectionLength;
+        var result = await dialog.ShowAsync(GetMainWindow());
+        if (result?.Length > 0)
+        {
+            await LoadFileAsync(result[0]);
+        }
+    }
 
-        var result = _findReplaceService.FindNext(
-            SelectedTab.Text, FindText, startIndex, options);
+    public async Task LoadFileAsync(string path)
+    {
+        try
+        {
+            var (content, encoding, lineEnding) = await _fileService.LoadFileAsync(path);
+
+            _textDocument = new TextDocument(content);
+            _document = new DocumentModel
+            {
+                FilePath = path,
+                IsUntitled = false,
+                IsModified = false,
+                Encoding = encoding,
+                LineEnding = lineEnding
+            };
+
+            UpdateEncodingDisplay();
+            UpdateStatus();
+        }
+        catch (Exception ex)
+        {
+            await ShowErrorAsync($"Cannot open file: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 3, function_14000b874
+    /// </summary>
+    [RelayCommand]
+    private async Task SaveFileAsync()
+    {
+        if (_document.IsUntitled)
+        {
+            await SaveFileAsAsync();
+            return;
+        }
+
+        await SaveToFileAsync(_document.FilePath);
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 4
+    /// </summary>
+    [RelayCommand]
+    private async Task SaveFileAsAsync()
+    {
+        var dialog = new SaveFileDialog //todo custom save file dialog
+        {
+            Title = "Save As",
+            DefaultExtension = "txt",
+            Filters = new List<FileDialogFilter>
+            {
+                new() { Name = "Text Documents", Extensions = { "txt" } },
+                new() { Name = "All Files", Extensions = { "*" } }
+            }
+        };
+
+        if (!_document.IsUntitled)
+        {
+            dialog.InitialFileName = Path.GetFileName(_document.FilePath);
+            dialog.Directory = Path.GetDirectoryName(_document.FilePath);
+        }
+
+        var result = await dialog.ShowAsync(GetMainWindow());
+        if (!string.IsNullOrEmpty(result))
+        {
+            await SaveToFileAsync(result);
+        }
+    }
+
+    private async Task SaveToFileAsync(string path)
+    {
+        try
+        {
+            await _fileService.SaveFileAsync(
+                path,
+                _textDocument.Text,
+                _document.Encoding,
+                _document.LineEnding);
+
+            _document.FilePath = path;
+            _document.IsUntitled = false;
+            _document.IsModified = false;
+            OnPropertyChanged(nameof(Document));
+        }
+        catch (Exception ex)
+        {
+            await ShowErrorAsync($"Cannot save file: {ex.Message}");
+        }
+    }
+
+    // ==================== Edit Commands ====================
+
+    /// <summary>
+    /// Maps to: Command ID 768 (EM_UNDO)
+    /// </summary>
+    [RelayCommand]
+    private void Undo() => TextEditor?.Undo();
+
+    [RelayCommand]
+    private void Redo() => TextEditor?.Redo();
+
+    /// <summary>
+    /// Maps to: Command ID 769 (WM_CUT)
+    /// </summary>
+    [RelayCommand]
+    private void Cut() => TextEditor?.Cut();
+
+    /// <summary>
+    /// Maps to: Command ID 770 (WM_COPY)
+    /// </summary>
+    [RelayCommand]
+    private void Copy() => TextEditor?.Copy();
+
+    /// <summary>
+    /// Maps to: Command ID 771 (WM_PASTE)
+    /// </summary>
+    [RelayCommand]
+    private void Paste() => TextEditor?.Paste();
+
+    /// <summary>
+    /// Maps to: Command ID 20
+    /// </summary>
+    [RelayCommand]
+    private void Delete()
+    {
+        if (TextEditor?.SelectionLength > 0)
+        {
+            TextEditor.SelectedText = "";
+        }
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 25 (EM_SETSEL 0, -1)
+    /// </summary>
+    [RelayCommand]
+    private void SelectAll() => TextEditor?.SelectAll();
+
+    /// <summary>
+    /// Maps to: Command ID 26
+    /// </summary>
+    [RelayCommand]
+    private void InsertDateTime()
+    {
+        var dateTime = DateTime.Now.ToString("h:mm tt M/d/yyyy");
+        TextEditor?.Document.Insert(TextEditor.CaretOffset, dateTime);
+    }
+
+    // ==================== Find/Replace ====================
+
+    /// <summary>
+    /// Maps to: Command ID 21, function_14001cfac
+    /// </summary>
+    [RelayCommand]
+    private void ShowFindDialog()
+    {
+        // Open find dialog (modeless)
+        var dialog = new FindReplaceDialog(this, findMode: true);
+        dialog.Show();
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 23
+    /// </summary>
+    [RelayCommand]
+    private void ShowReplaceDialog()
+    {
+        var dialog = new FindReplaceDialog(this, findMode: false);
+        dialog.Show();
+    }
+
+    [RelayCommand]
+    private void ShowPageSetupDialog() //todo: add dialog xaml
+    {
+        //var dialog = new PageSetupDialog(this);
+        //dialog.Show();
+    }
+    [RelayCommand]
+    private void Print() 
+    {
+    }
+
+    [RelayCommand]
+    private void OnExit()
+    {
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 28 (F3)
+    /// </summary>
+    [RelayCommand]
+    private void FindNext()
+    {
+        if (TextEditor == null) return;
+
+        var result = SearchSettings.SearchUp
+            ? _searchService.FindPrevious(TextEditor, SearchSettings)
+            : _searchService.FindNext(TextEditor, SearchSettings);
 
         if (result != null)
         {
-            SelectedTab.SelectionStart = result.Index;
-            SelectedTab.SelectionLength = result.Length;
-            SelectedTab.CaretOffset = result.Index + result.Length;
-            StatusMessage = string.Empty;
+            TextEditor.Select(result.StartOffset, result.Length);
+            TextEditor.ScrollToLine(TextEditor.Document.GetLineByOffset(result.StartOffset).LineNumber);
         }
         else
         {
-            StatusMessage = $"Cannot find \"{FindText}\"";
+            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
         }
-
-        _settingsService.Settings.AddFindHistory(FindText);
-        return result;
     }
 
-    public FindResult? FindPrevious()
+    /// <summary>
+    /// Maps to: Command ID 24 (Go To dialog)
+    /// </summary>
+    [RelayCommand]
+    private async Task GoToLineAsync()
     {
-        if (SelectedTab == null || string.IsNullOrEmpty(FindText))
-            return null;
-
-        var options = new FindOptions
+        var dialog = new GoToLineDialog
         {
-            MatchCase = MatchCase,
-            MatchWholeWord = MatchWholeWord,
-            UseRegex = UseRegex,
-            WrapAround = true
+            MaxLine = TextDocument.LineCount
         };
 
-        var result = _findReplaceService.FindPrevious(
-            SelectedTab.Text, FindText, SelectedTab.SelectionStart, options);
-
-        if (result != null)
+        var result = await dialog.ShowDialog<int?>(GetMainWindow());
+        if (result.HasValue && TextEditor != null)
         {
-            SelectedTab.SelectionStart = result.Index;
-            SelectedTab.SelectionLength = result.Length;
-            SelectedTab.CaretOffset = result.Index;
-            StatusMessage = string.Empty;
+            var line = TextDocument.GetLineByNumber(result.Value);
+            TextEditor.CaretOffset = line.Offset;
+            TextEditor.ScrollToLine(result.Value);
         }
-        else
-        {
-            StatusMessage = $"Cannot find \"{FindText}\"";
-        }
-
-        return result;
     }
 
-    public void ReplaceCurrent()
-    {
-        if (SelectedTab == null || string.IsNullOrEmpty(FindText))
-            return;
+    // ==================== Format Commands ====================
 
-        var options = new FindOptions
+    /// <summary>
+    /// Maps to: Command ID 32, function_14001d364
+    /// </summary>
+    [RelayCommand]
+    private void ToggleWordWrap()
+    {
+        Settings.WordWrap = !Settings.WordWrap;
+        OnPropertyChanged(nameof(Settings));
+        _settingsService.SaveEditorSettings(Settings);
+    }
+
+    /// <summary>
+    /// Maps to: Command ID 33 (ChooseFontW)
+    /// </summary>
+    [RelayCommand]
+    private async Task ChangeFontAsync()
+    {
+        // Show font picker dialog
+        // (Avalonia doesn't have built-in font dialog, need custom)
+        var dialog = new FontDialog
         {
-            MatchCase = MatchCase,
-            MatchWholeWord = MatchWholeWord,
-            UseRegex = UseRegex,
-            WrapAround = true
+            FontFamily = Settings.FontFamily,
+            FontSize = Settings.FontSize
         };
 
-        var (newText, nextResult) = _findReplaceService.ReplaceNext(
-            SelectedTab.Text, FindText, ReplaceText,
-            SelectedTab.SelectionStart, SelectedTab.SelectionLength, options);
-
-        SelectedTab.Text = newText;
-        
-        if (nextResult != null)
+        var result = await dialog.ShowDialog<bool>(GetMainWindow());
+        if (result)
         {
-            SelectedTab.SelectionStart = nextResult.Index;
-            SelectedTab.SelectionLength = nextResult.Length;
-            SelectedTab.CaretOffset = nextResult.Index + nextResult.Length;
-        }
-
-        _settingsService.Settings.AddReplaceHistory(ReplaceText);
-    }
-
-    public void ReplaceAll()
-    {
-        if (SelectedTab == null || string.IsNullOrEmpty(FindText))
-            return;
-
-        var options = new FindOptions
-        {
-            MatchCase = MatchCase,
-            MatchWholeWord = MatchWholeWord,
-            UseRegex = UseRegex
-        };
-
-        var (newText, count) = _findReplaceService.ReplaceAll(
-            SelectedTab.Text, FindText, ReplaceText, options);
-
-        SelectedTab.Text = newText;
-        StatusMessage = $"Replaced {count} occurrence(s)";
-
-        _settingsService.Settings.AddReplaceHistory(ReplaceText);
-    }
-
-    // === Go To ===
-    
-    public void GoToLine(int lineNumber)
-    {
-        SelectedTab?.GoToLine(lineNumber);
-    }
-
-    // === View Settings ===
-    
-    public bool WordWrap
-    {
-        get => _wordWrap;
-        set
-        {
-            if (_wordWrap != value)
-            {
-                _wordWrap = value;
-                _settingsService.Settings.WordWrap = value;
-                OnPropertyChanged();
-            }
+            Settings.FontFamily = dialog.FontFamily.Name;
+            Settings.FontSize = dialog.FontSize;
+            OnPropertyChanged(nameof(Settings));
+            _settingsService.SaveEditorSettings(Settings);
         }
     }
 
-    public bool ShowLineNumbers
+    // ==================== View Commands ====================
+
+    /// <summary>
+    /// Maps to: Command ID 27
+    /// </summary>
+    [RelayCommand]
+    private void ToggleStatusBar()
     {
-        get => _showLineNumbers;
-        set
+        Settings.ShowStatusBar = !Settings.ShowStatusBar;
+        OnPropertyChanged(nameof(Settings));
+        _settingsService.SaveEditorSettings(Settings);
+    }
+
+    /// <summary>
+    /// Maps to: Command IDs 34, 35, 36
+    /// </summary>
+    [RelayCommand]
+    private void ZoomIn()
+    {
+        Settings.ZoomLevel = Math.Min(500, Settings.ZoomLevel + 10);
+        OnPropertyChanged(nameof(Settings));
+    }
+
+    [RelayCommand]
+    private void ZoomOut()
+    {
+        Settings.ZoomLevel = Math.Max(10, Settings.ZoomLevel - 10);
+        OnPropertyChanged(nameof(Settings));
+    }
+
+    [RelayCommand]
+    private void RestoreZoom()
+    {
+        Settings.ZoomLevel = 100;
+        OnPropertyChanged(nameof(Settings));
+    }
+
+    // ==================== Help Commands ====================
+
+    [RelayCommand]
+    private void ViewHelp()
+    {
+        // Open help URL (like original Notepad)
+        Process.Start(new ProcessStartInfo
         {
-            if (_showLineNumbers != value)
-            {
-                _showLineNumbers = value;
-                _settingsService.Settings.ShowLineNumbers = value;
-                OnPropertyChanged();
-            }
-        }
+            FileName = "https://go.microsoft.com/fwlink/?LinkId=834783",
+            UseShellExecute = true
+        });
     }
 
-    public bool ShowStatusBar
+    [RelayCommand]
+    private void ShowAbout()
     {
-        get => _showStatusBar;
-        set
+        var dialog = new AboutDialog();
+        dialog.ShowDialog(GetMainWindow());
+    }
+
+    // ==================== Helper Methods ====================
+
+    public async Task<bool> CheckSaveChangesAsync()
+    {
+        if (!Document.IsModified) return true;
+
+        var result = await MessageBoxManager.GetMessageBoxStandard("Notepad",
+            $"Do you want to save changes to {Document.FileName}?", ButtonEnum.YesNoCancel).ShowAsync();
+
+        if (result == ButtonResult.Yes)
         {
-            if (_showStatusBar != value)
-            {
-                _showStatusBar = value;
-                _settingsService.Settings.ShowStatusBar = value;
-                OnPropertyChanged();
-            }
+            await SaveFileAsync();
+            return !Document.IsModified;
         }
+
+        return result == ButtonResult.No;
     }
 
-    public AppTheme Theme
+    public void UpdateCaretPosition(int line, int column)
     {
-        get => _theme;
-        set
-        {
-            if (_theme != value)
-            {
-                _theme = value;
-                _settingsService.Settings.Theme = value;
-                OnPropertyChanged();
-            }
-        }
+        CaretLine = line;
+        CaretColumn = column;
+        StatusText = $"Ln {line}, Col {column}";
     }
 
-    // === Zoom ===
-    
-    public void ZoomIn()
+    private void UpdateEncodingDisplay()
     {
-        if (SelectedTab != null)
-            SelectedTab.ZoomLevel = Math.Min(SelectedTab.ZoomLevel + 10, 500);
+        EncodingText = Document.Encoding.WebName.ToUpperInvariant();
+        LineEndingText = Document.LineEnding.ToString();
     }
 
-    public void ZoomOut()
+    private void UpdateStatus()
     {
-        if (SelectedTab != null)
-            SelectedTab.ZoomLevel = Math.Max(SelectedTab.ZoomLevel - 10, 10);
+        StatusText = "Ready";
     }
 
-    public void ResetZoom()
-    {
-        if (SelectedTab != null)
-            SelectedTab.ZoomLevel = 100;
-    }
+    // TextEditor reference (set from View)
+    public AvaloniaEdit.TextEditor? TextEditor { get; set; }
 
-    // === Status Bar ===
-    
-    public string StatusMessage
-    {
-        get => _statusMessage;
-        set
-        {
-            if (_statusMessage != value)
-            {
-                _statusMessage = value;
-                OnPropertyChanged();
-            }
-        }
-    }
+    private Window GetMainWindow() =>
+        Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
+            ? desktop.MainWindow!
+            : throw new InvalidOperationException();
 
-    // === Settings Persistence ===
-    
-    public async Task SaveSettingsAsync()
-    {
-        await _settingsService.SaveAsync();
-    }
-
-    public AppSettings Settings => _settingsService.Settings;
-
-    // === Encoding/Line Ending Changes ===
-    
-    public void SetEncoding(System.Text.Encoding encoding)
-    {
-        if (SelectedTab != null)
-        {
-            SelectedTab.Document.Encoding = encoding;
-            SelectedTab.Document.IsModified = true;
-            OnPropertyChanged(nameof(SelectedTab));
-        }
-    }
-
-    public void SetLineEnding(LineEnding lineEnding)
-    {
-        if (SelectedTab != null)
-        {
-            SelectedTab.Document.LineEnding = lineEnding;
-            SelectedTab.Document.IsModified = true;
-            OnPropertyChanged(nameof(SelectedTab));
-        }
-    }
-
-    // === INotifyPropertyChanged ===
-    
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
+    private Task ShowErrorAsync(string message) =>
+        MessageBoxManager.GetMessageBoxStandard("Error",message, ButtonEnum.Ok).ShowAsync();
 }

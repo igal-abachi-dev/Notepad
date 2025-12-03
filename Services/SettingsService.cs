@@ -1,58 +1,75 @@
+
+using NotepadAvalonia.Models;
 using System;
 using System.IO;
-using System.Text.Json;
-using System.Threading.Tasks;
-using AvaloniaNotePad.Models;
 
-namespace AvaloniaNotePad.Services;
+
+using System.Text.Json;
+
 
 /// <summary>
-/// Service to persist and load settings.
+/// Cross-platform settings storage
+/// Maps to: function_140010bd8 (load), function_1400107bc (save)
+/// Uses JSON instead of registry for portability
 /// </summary>
 public class SettingsService
 {
     private readonly string _settingsPath;
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true
-    };
-
-    public AppSettings Settings { get; private set; } = new();
 
     public SettingsService()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var appFolder = Path.Combine(appData, "AvaloniaNotePad");
-        Directory.CreateDirectory(appFolder);
-        _settingsPath = Path.Combine(appFolder, "settings.json");
+        var settingsDir = Path.Combine(appData, "NotepadAvalonia");
+        Directory.CreateDirectory(settingsDir);
+        _settingsPath = Path.Combine(settingsDir, "settings.json");
     }
 
-    public async Task LoadAsync()
+    private AppSettings LoadAll()
     {
-        try
-        {
-            if (File.Exists(_settingsPath))
-            {
-                var json = await File.ReadAllTextAsync(_settingsPath);
-                Settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
-            }
-        }
-        catch
-        {
-            Settings = new AppSettings();
-        }
+        if (!File.Exists(_settingsPath))
+            return new AppSettings();
+
+        var json = File.ReadAllText(_settingsPath);
+        return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
     }
 
-    public async Task SaveAsync()
+    private void SaveAll(AppSettings settings)
     {
-        try
+        var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
         {
-            var json = JsonSerializer.Serialize(Settings, JsonOptions);
-            await File.WriteAllTextAsync(_settingsPath, json);
-        }
-        catch
-        {
-            // Silently fail - don't crash the app for settings
-        }
+            WriteIndented = true
+        });
+        File.WriteAllText(_settingsPath, json);
+    }
+
+    public EditorSettings LoadEditorSettings() => LoadAll().Editor;
+    public void SaveEditorSettings(EditorSettings settings)
+    {
+        var all = LoadAll();
+        all.Editor = settings;
+        SaveAll(all);
+    }
+
+    public SearchSettings LoadSearchSettings() => LoadAll().Search;
+    public void SaveSearchSettings(SearchSettings settings)
+    {
+        var all = LoadAll();
+        all.Search = settings;
+        SaveAll(all);
+    }
+
+    public PageSetupSettings LoadPageSetupSettings() => LoadAll().PageSetup;
+    public void SavePageSetupSettings(PageSetupSettings settings)
+    {
+        var all = LoadAll();
+        all.PageSetup = settings;
+        SaveAll(all);
+    }
+
+    private class AppSettings
+    {
+        public EditorSettings Editor { get; set; } = new();
+        public SearchSettings Search { get; set; } = new();
+        public PageSetupSettings PageSetup { get; set; } = new();
     }
 }

@@ -1,116 +1,164 @@
-using System;
 using System.IO;
+using NotepadAvalonia.Models;
 using System.Text;
 using System.Threading.Tasks;
-using AvaloniaNotePad.Models;
 
-namespace AvaloniaNotePad.Services;
+namespace NotepadAvalonia.Services;
 
 /// <summary>
-/// Handles all file I/O operations
+/// Maps to: function_14000ffe4 (load), function_14000f36c (save)
+/// Encoding detection: function_140007f5c
 /// </summary>
-public class FileService
+public class FileService 
 {
-    /// <summary>
-    /// Opens a file and returns a Document with detected encoding and line ending
-    /// </summary>
-    public async Task<Document> OpenFileAsync(string filePath)
+    public async Task<(string content, Encoding encoding, LineEndingStyle lineEnding)> LoadFileAsync(string path)
     {
-        var bytes = await File.ReadAllBytesAsync(filePath);
-        var encoding = SupportedEncodings.DetectEncoding(bytes);
-        var content = encoding.GetString(bytes);
-        
-        // Remove BOM if present in content
-        if (content.Length > 0 && content[0] == '\uFEFF')
-            content = content.Substring(1);
-            
-        var lineEnding = SupportedEncodings.DetectLineEnding(content);
-        
-        // Normalize line endings internally to \n for the editor
-        content = NormalizeLineEndings(content);
-        
-        return new Document
+        var bytes = await File.ReadAllBytesAsync(path);
+        var encoding = DetectEncoding(bytes);
+
+        // Skip BOM if present
+        int bomLength = GetBomLength(encoding, bytes);
+        var content = encoding.GetString(bytes, bomLength, bytes.Length - bomLength);
+
+        var lineEnding = DetectLineEndings(content);
+
+        return (content, encoding, lineEnding);
+    }
+
+    public async Task SaveFileAsync(string path, string content, Encoding encoding, LineEndingStyle lineEnding)
+    {
+        // Normalize line endings
+        content = NormalizeLineEndings(content, lineEnding);
+
+        // Get bytes with optional BOM
+        byte[] contentBytes = encoding.GetBytes(content);
+        byte[] bomBytes = encoding.GetPreamble();
+
+        using var stream = File.Create(path);
+        if (bomBytes.Length > 0)
         {
-            FilePath = filePath,
-            Content = content,
-            Encoding = encoding,
-            LineEnding = lineEnding,
-            IsModified = false,
-            LastModified = File.GetLastWriteTime(filePath)
+            await stream.WriteAsync(bomBytes);
+        }
+        await stream.WriteAsync(contentBytes);
+    }
+
+    /// <summary>
+    /// Maps to function_140007f5c BOM detection logic
+    /// </summary>
+    public Encoding DetectEncoding(byte[] bytes)
+    {
+        if (bytes.Length < 2) return Encoding.Default;
+
+        // UTF-8 BOM: EF BB BF
+        if (bytes.Length >= 3 &&
+            bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            return new UTF8Encoding(true);
+        }
+
+        // UTF-16 LE BOM: FF FE
+        if (bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            return Encoding.Unicode;
+        }
+
+        // UTF-16 BE BOM: FE FF  
+        if (bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            return Encoding.BigEndianUnicode;
+        }
+
+        // Heuristic detection (like IsTextUnicode)
+        if (LooksLikeUtf8(bytes))
+        {
+            return new UTF8Encoding(false);
+        }
+
+        return Encoding.Default; // ANSI
+    }
+
+    public LineEndingStyle DetectLineEndings(string content)
+    {
+        int crlf = 0, lf = 0, cr = 0;
+
+        for (int i = 0; i < content.Length; i++)
+        {
+            if (content[i] == '\r')
+            {
+                if (i + 1 < content.Length && content[i + 1] == '\n')
+                {
+                    crlf++;
+                    i++; // Skip the \n
+                }
+                else
+                {
+                    cr++;
+                }
+            }
+            else if (content[i] == '\n')
+            {
+                lf++;
+            }
+        }
+
+        if (crlf >= lf && crlf >= cr) return LineEndingStyle.CRLF;
+        if (lf >= cr) return LineEndingStyle.LF;
+        return LineEndingStyle.CR;
+    }
+
+    private int GetBomLength(Encoding encoding, byte[] bytes)
+    {
+        if (bytes.Length >= 3 &&
+            bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            return 3;
+        if (bytes.Length >= 2 &&
+            ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
+             (bytes[0] == 0xFE && bytes[1] == 0xFF)))
+            return 2;
+        return 0;
+    }
+
+    private string NormalizeLineEndings(string content, LineEndingStyle style)
+    {
+        // First normalize to \n
+        content = content.Replace("\r\n", "\n").Replace("\r", "\n");
+
+        return style switch
+        {
+            LineEndingStyle.CRLF => content.Replace("\n", "\r\n"),
+            LineEndingStyle.CR => content.Replace("\n", "\r"),
+            _ => content // LF
         };
     }
-    
-    /// <summary>
-    /// Saves a document to file
-    /// </summary>
-    public async Task SaveFileAsync(Document document, string? filePath = null)
+
+    private bool LooksLikeUtf8(byte[] bytes)
     {
-        var path = filePath ?? document.FilePath;
-        if (string.IsNullOrEmpty(path))
-            throw new ArgumentException("No file path specified");
-            
-        var content = ConvertLineEndings(document.Content, document.LineEnding);
-        
-        // Get encoding with or without BOM
-        var encoding = document.Encoding;
-        var preamble = encoding.GetPreamble();
-        
-        await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-        
-        // Write BOM if needed (UTF-8 with BOM, UTF-16)
-        if (preamble.Length > 0)
-            await stream.WriteAsync(preamble, 0, preamble.Length);
-            
-        var bytes = encoding.GetBytes(content);
-        await stream.WriteAsync(bytes, 0, bytes.Length);
-        
-        document.FilePath = path;
-        document.IsModified = false;
-        document.LastModified = DateTime.Now;
-    }
-    
-    /// <summary>
-    /// Normalize all line endings to \n for internal use
-    /// </summary>
-    private string NormalizeLineEndings(string content)
-    {
-        return content
-            .Replace("\r\n", "\n")
-            .Replace("\r", "\n");
-    }
-    
-    /// <summary>
-    /// Convert line endings based on document setting for saving
-    /// </summary>
-    private string ConvertLineEndings(string content, LineEnding lineEnding)
-    {
-        var normalized = NormalizeLineEndings(content);
-        return lineEnding switch
+        int i = 0;
+        while (i < bytes.Length)
         {
-            LineEnding.CRLF => normalized.Replace("\n", "\r\n"),
-            LineEnding.CR => normalized.Replace("\n", "\r"),
-            LineEnding.LF => normalized,
-            _ => normalized.Replace("\n", "\r\n")
-        };
-    }
-    
-    /// <summary>
-    /// Check if file exists and is accessible
-    /// </summary>
-    public bool FileExists(string filePath)
-    {
-        return File.Exists(filePath);
-    }
-    
-    /// <summary>
-    /// Check if file has been modified externally
-    /// </summary>
-    public bool HasExternalChanges(Document document)
-    {
-        if (string.IsNullOrEmpty(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-            
-        var currentModified = File.GetLastWriteTime(document.FilePath);
-        return document.LastModified.HasValue && currentModified > document.LastModified.Value;
+            if (bytes[i] <= 0x7F)
+            {
+                i++;
+            }
+            else if (bytes[i] >= 0xC2 && bytes[i] <= 0xDF)
+            {
+                if (i + 1 >= bytes.Length || (bytes[i + 1] & 0xC0) != 0x80)
+                    return false;
+                i += 2;
+            }
+            else if (bytes[i] >= 0xE0 && bytes[i] <= 0xEF)
+            {
+                if (i + 2 >= bytes.Length ||
+                    (bytes[i + 1] & 0xC0) != 0x80 ||
+                    (bytes[i + 2] & 0xC0) != 0x80)
+                    return false;
+                i += 3;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }

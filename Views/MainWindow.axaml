@@ -1,221 +1,154 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="using:AvaloniaNotePad.ViewModels"	
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
-        xmlns:views="using:AvaloniaNotePad.Views"
-        xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
-        x:Class="AvaloniaNotePad.Views.MainWindow"
-        x:DataType="vm:MainWindowViewModel"
-        Icon="/Assets/avalonia-logo.ico"
-        Title="Notepad"
-        Width="900" Height="650"
-        MinWidth="400" MinHeight="300">
-    
-    <Window.KeyBindings>
-        <!-- File -->
-        <KeyBinding Gesture="Ctrl+N" Command="{Binding NewDocumentCommand}" />
-        <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenCommand}" />
-        <KeyBinding Gesture="Ctrl+S" Command="{Binding SaveCommand}" />
-        <KeyBinding Gesture="Ctrl+Shift+S" Command="{Binding SaveAsCommand}" />
-        <KeyBinding Gesture="Ctrl+W" Command="{Binding CloseTabCommand}" />
-        <!-- Edit -->
-        <KeyBinding Gesture="Ctrl+F" Command="{Binding FindCommand}" />
-        <KeyBinding Gesture="Ctrl+H" Command="{Binding ReplaceCommand}" />
-        <KeyBinding Gesture="F3" Command="{Binding FindNextCommand}" />
-        <KeyBinding Gesture="Shift+F3" Command="{Binding FindPreviousCommand}" />
-        <KeyBinding Gesture="Ctrl+G" Command="{Binding GoToLineCommand}" />
-        <KeyBinding Gesture="F5" Command="{Binding InsertDateTimeCommand}" />
-        <!-- View -->
-        <!--<KeyBinding Gesture="Ctrl+Plus" Command="{Binding ZoomInCommand}" />
-        <KeyBinding Gesture="Ctrl+Minus" Command="{Binding ZoomOutCommand}" />-->
-        <KeyBinding Gesture="Ctrl+0" Command="{Binding ResetZoomCommand}" />
-        <!-- Escape to close find -->
-        <KeyBinding Gesture="Escape" Command="{Binding HideFindReplaceCommand}" />
-    </Window.KeyBindings>
+        xmlns:avaloniaEdit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+        xmlns:viewModels="clr-namespace:NotepadAvalonia.ViewModels"
+        x:Class="NotepadAvalonia.Views.MainWindow"
+        x:DataType="viewModels:MainWindowViewModel"
+        Title="{Binding Document.WindowTitle}"
+        Width="{Binding Settings.WindowWidth}"
+        Height="{Binding Settings.WindowHeight}">
 
-    <Design.DataContext>
-        <!-- This only sets the DataContext for the previewer in an IDE,
-             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
-        <vm:MainWindowViewModel/>
-    </Design.DataContext>
-    
-    <DockPanel>
-        <!-- Menu Bar -->
-        <Menu DockPanel.Dock="Top">
-            <MenuItem Header="_File">
-                <MenuItem Header="_New" InputGesture="Ctrl+N" Command="{Binding NewDocumentCommand}" />
-                <MenuItem Header="New _Window" Command="{Binding NewWindowCommand}" />
-                <MenuItem Header="_Open..." InputGesture="Ctrl+O" Command="{Binding OpenCommand}" />
-                <MenuItem Header="_Save" InputGesture="Ctrl+S" Command="{Binding SaveCommand}" />
-                <MenuItem Header="Save _As..." InputGesture="Ctrl+Shift+S" Command="{Binding SaveAsCommand}" />
-                <Separator />
-                <MenuItem Header="Page Set_up..." Command="{Binding PageSetupCommand}" />
-                <MenuItem Header="_Print..." InputGesture="Ctrl+P" Command="{Binding PrintCommand}" />
-                <Separator />
-                <MenuItem Header="Close _Tab" InputGesture="Ctrl+W" Command="{Binding CloseTabCommand}" />
-                <MenuItem Header="E_xit" Command="{Binding ExitCommand}" />
-            </MenuItem>
-            
-            <MenuItem Header="_Edit">
-                <MenuItem Header="_Undo" InputGesture="Ctrl+Z" Command="{Binding UndoCommand}" />
-                <MenuItem Header="_Redo" InputGesture="Ctrl+Y" Command="{Binding RedoCommand}" />
-                <Separator />
-                <MenuItem Header="Cu_t" InputGesture="Ctrl+X" Command="{Binding CutCommand}" />
-                <MenuItem Header="_Copy" InputGesture="Ctrl+C" Command="{Binding CopyCommand}" />
-                <MenuItem Header="_Paste" InputGesture="Ctrl+V" Command="{Binding PasteCommand}" />
-                <MenuItem Header="_Delete" InputGesture="Delete" Command="{Binding DeleteCommand}" />
-                <Separator />
-                <MenuItem Header="_Find..." InputGesture="Ctrl+F" Command="{Binding FindCommand}" />
-                <MenuItem Header="Find _Next" InputGesture="F3" Command="{Binding FindNextCommand}" />
-                <MenuItem Header="Find _Previous" InputGesture="Shift+F3" Command="{Binding FindPreviousCommand}" />
-                <MenuItem Header="_Replace..." InputGesture="Ctrl+H" Command="{Binding ReplaceCommand}" />
-                <MenuItem Header="_Go To..." InputGesture="Ctrl+G" Command="{Binding GoToLineCommand}" />
-                <Separator />
-                <MenuItem Header="Select _All" InputGesture="Ctrl+A" Command="{Binding SelectAllCommand}" />
-                <MenuItem Header="Time/_Date" InputGesture="F5" Command="{Binding InsertDateTimeCommand}" />
-            </MenuItem>
-            
-            <MenuItem Header="_View">
-                <MenuItem Header="_Zoom">
-                    <!--<MenuItem Header="Zoom _In" InputGesture="Ctrl+Plus" Command="{Binding ZoomInCommand}" />
-                    <MenuItem Header="Zoom _Out" InputGesture="Ctrl+Minus" Command="{Binding ZoomOutCommand}" />-->
-                    <MenuItem Header="_Restore Default Zoom" InputGesture="Ctrl+0" Command="{Binding ResetZoomCommand}" />
-                </MenuItem>
-                <Separator />
-                <MenuItem Header="_Word Wrap" 
-                          IsChecked="{Binding WordWrap}" 
-                          Command="{Binding ToggleWordWrapCommand}" />
-                <MenuItem Header="_Line Numbers"
-                          IsChecked="{Binding ShowLineNumbers}"
-                          Command="{Binding ToggleLineNumbersCommand}" />
-                <MenuItem Header="_Status Bar"
-                          IsChecked="{Binding ShowStatusBar}"
-                          Command="{Binding ToggleStatusBarCommand}" />
-            </MenuItem>
-            
-            <MenuItem Header="F_ormat">
-                <MenuItem Header="_Font..." Command="{Binding FontCommand}" />
-                <Separator />
-                <MenuItem Header="_Encoding">
-                    <MenuItem Header="UTF-8" Command="{Binding SetEncodingCommand}" CommandParameter="UTF-8" />
-                    <MenuItem Header="UTF-8 with BOM" Command="{Binding SetEncodingCommand}" CommandParameter="UTF-8-BOM" />
-                    <MenuItem Header="UTF-16 LE" Command="{Binding SetEncodingCommand}" CommandParameter="UTF-16LE" />
-                    <MenuItem Header="UTF-16 BE" Command="{Binding SetEncodingCommand}" CommandParameter="UTF-16BE" />
-                    <MenuItem Header="ANSI" Command="{Binding SetEncodingCommand}" CommandParameter="ANSI" />
-                </MenuItem>
-                <MenuItem Header="_Line Ending">
-                    <MenuItem Header="Windows (CRLF)" Command="{Binding SetLineEndingCommand}" CommandParameter="CRLF" />
-                    <MenuItem Header="Unix (LF)" Command="{Binding SetLineEndingCommand}" CommandParameter="LF" />
-                    <MenuItem Header="Classic Mac (CR)" Command="{Binding SetLineEndingCommand}" CommandParameter="CR" />
-                </MenuItem>
-            </MenuItem>
-            
-            <MenuItem Header="_Help">
-                <MenuItem Header="_About Notepad" Command="{Binding AboutCommand}" />
-            </MenuItem>
-        </Menu>
-        
-        <!-- Find/Replace Panel -->
-        <Border DockPanel.Dock="Top" 
-                IsVisible="{Binding ShowFindReplace}"
-                Background="{DynamicResource SystemControlBackgroundAltMediumBrush}"
-                Padding="8"
-                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
-                BorderThickness="0,0,0,1">
-            <StackPanel Spacing="8">
-                <!-- Find Row -->
-                <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
-                    <TextBlock Grid.Column="0" Text="Find:" VerticalAlignment="Center" Width="60" />
-                    <TextBox Grid.Column="1" 
-                             Text="{Binding FindText}" 
-                             Watermark="Find what..."
-                             Name="FindTextBox" />
-                    <Button Grid.Column="2" Content="Find Next" Command="{Binding FindNextCommand}" Margin="4,0" />
-                    <Button Grid.Column="3" Content="Find Previous" Command="{Binding FindPreviousCommand}" Margin="4,0" />
-                    <ToggleButton Grid.Column="4" Content="Aa" 
-                                  IsChecked="{Binding MatchCase}"
-                                  ToolTip.Tip="Match Case" Margin="4,0" />
-                    <ToggleButton Grid.Column="5" Content=".*" 
-                                  IsChecked="{Binding UseRegex}"
-                                  ToolTip.Tip="Use Regular Expression" Margin="4,0" />
-                </Grid>
-                
-                <!-- Replace Row (visible in replace mode) -->
-                <Grid ColumnDefinitions="Auto,*,Auto,Auto" 
-                      IsVisible="{Binding IsReplaceMode}">
-                    <TextBlock Grid.Column="0" Text="Replace:" VerticalAlignment="Center" Width="60" />
-                    <TextBox Grid.Column="1" 
-                             Text="{Binding ReplaceText}" 
-                             Watermark="Replace with..." />
-                    <Button Grid.Column="2" Content="Replace" Command="{Binding ReplaceCurrentCommand}" Margin="4,0" />
-                    <Button Grid.Column="3" Content="Replace All" Command="{Binding ReplaceAllCommand}" Margin="4,0" />
-                </Grid>
-                
-                <!-- Options Row -->
-                <StackPanel Orientation="Horizontal" Spacing="16">
-                    <CheckBox Content="Match whole word" IsChecked="{Binding MatchWholeWord}" />
-                    <Button Content="Close" Command="{Binding HideFindReplaceCommand}" 
-                            HorizontalAlignment="Right" />
-                </StackPanel>
-            </StackPanel>
-        </Border>
-        
-        <!-- Status Bar -->
-        <Border DockPanel.Dock="Bottom" 
-                IsVisible="{Binding ShowStatusBar}"
-                Background="{DynamicResource SystemControlBackgroundAltMediumBrush}"
-                Padding="8,4"
-                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
-                BorderThickness="0,1,0,0">
-            <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto">
-                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" />
-                <TextBlock Grid.Column="1" Margin="16,0">
-                    <TextBlock.Text>
-                        <MultiBinding StringFormat="Ln {0}, Col {1}">
-                            <Binding Path="SelectedTab.CurrentLine" FallbackValue="1" />
-                            <Binding Path="SelectedTab.CurrentColumn" FallbackValue="1" />
-                        </MultiBinding>
-                    </TextBlock.Text>
-                </TextBlock>
-                <TextBlock Grid.Column="2" Text="{Binding SelectedTab.ZoomLevel, StringFormat={}{0:0}%}" Margin="16,0" />
-                <TextBlock Grid.Column="3" Text="{Binding SelectedTab.LineEndingDisplay}" Margin="16,0" />
-                <TextBlock Grid.Column="4" Text="{Binding SelectedTab.EncodingDisplay}" Margin="16,0" />
-            </Grid>
-        </Border>
-        
-        <!-- Tab Strip and Editor -->
-        <TabControl ItemsSource="{Binding Tabs}" 
-                    SelectedItem="{Binding SelectedTab}"
-                    Padding="0">
-            <TabControl.ItemTemplate>
-                <DataTemplate DataType="vm:TabViewModel">
-                    <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="{Binding Title}" />
-                        <Button Content="×" 
-                                Classes="close-tab"
-                                Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).CloseTabCommand}"
-                                CommandParameter="{Binding}"
-                                Padding="4,0"
-                                Background="Transparent"
-                                BorderThickness="0" />
-                    </StackPanel>
-                </DataTemplate>
-            </TabControl.ItemTemplate>
-            <TabControl.ContentTemplate>
-                <DataTemplate DataType="vm:TabViewModel">
-                    <avaloniaEdit:TextEditor
-                        x:Name="Editor"
-                        Document="{Binding TextDocument}"
-                        FontFamily="Cascadia Code, Consolas, Courier New"
-                        FontSize="14"
-                        ShowLineNumbers="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).ShowLineNumbers}"
-                        WordWrap="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).WordWrap}"
-                        HorizontalScrollBarVisibility="Auto"
-                        VerticalScrollBarVisibility="Auto" />
-                </DataTemplate>
-            </TabControl.ContentTemplate>
-        </TabControl>
-    </DockPanel>
+	<Window.KeyBindings>
+		<!-- Standard shortcuts matching original Notepad -->
+		<KeyBinding Gesture="Ctrl+N" Command="{Binding NewFileCommand}" />
+		<KeyBinding Gesture="Ctrl+O" Command="{Binding OpenFileCommand}" />
+		<KeyBinding Gesture="Ctrl+S" Command="{Binding SaveFileCommand}" />
+		<KeyBinding Gesture="Ctrl+Shift+S" Command="{Binding SaveFileAsCommand}" />
+		<KeyBinding Gesture="Ctrl+Z" Command="{Binding UndoCommand}" />
+		<KeyBinding Gesture="Ctrl+Y" Command="{Binding RedoCommand}" />
+		<KeyBinding Gesture="Ctrl+X" Command="{Binding CutCommand}" />
+		<KeyBinding Gesture="Ctrl+C" Command="{Binding CopyCommand}" />
+		<KeyBinding Gesture="Ctrl+V" Command="{Binding PasteCommand}" />
+		<KeyBinding Gesture="Delete" Command="{Binding DeleteCommand}" />
+		<KeyBinding Gesture="Ctrl+A" Command="{Binding SelectAllCommand}" />
+		<KeyBinding Gesture="F5" Command="{Binding InsertDateTimeCommand}" />
+		<KeyBinding Gesture="Ctrl+F" Command="{Binding ShowFindDialogCommand}" />
+		<KeyBinding Gesture="Ctrl+H" Command="{Binding ShowReplaceDialogCommand}" />
+		<KeyBinding Gesture="F3" Command="{Binding FindNextCommand}" />
+		<KeyBinding Gesture="Ctrl+G" Command="{Binding GoToLineCommand}" />
+		<!--<KeyBinding Gesture="Ctrl+Plus" Command="{Binding ZoomInCommand}" />
+		<KeyBinding Gesture="Ctrl+Minus" Command="{Binding ZoomOutCommand}" />-->
+		<KeyBinding Gesture="Ctrl+0" Command="{Binding RestoreZoomCommand}" />
+	</Window.KeyBindings>
+
+	<DockPanel>
+		<!-- Menu Bar -->
+		<Menu DockPanel.Dock="Top">
+			<MenuItem Header="_File">
+				<MenuItem Header="_New" Command="{Binding NewFileCommand}"
+                          InputGesture="Ctrl+N" />
+				<MenuItem Header="_Open..." Command="{Binding OpenFileCommand}"
+                          InputGesture="Ctrl+O" />
+				<MenuItem Header="_Save" Command="{Binding SaveFileCommand}"
+                          InputGesture="Ctrl+S" />
+				<MenuItem Header="Save _As..." Command="{Binding SaveFileAsCommand}"
+                          InputGesture="Ctrl+Shift+S" />
+				<Separator />
+				<MenuItem Header="Page Set_up..." Command="{Binding ShowPageSetupDialogCommand}" />
+				<MenuItem Header="_Print..." Command="{Binding PrintCommand}"
+                          InputGesture="Ctrl+P" />
+				<Separator />
+				<MenuItem Header="E_xit" Command="{Binding ExitCommand}" />
+			</MenuItem>
+
+			<MenuItem Header="_Edit">
+				<MenuItem Header="_Undo" Command="{Binding UndoCommand}"
+                          InputGesture="Ctrl+Z" />
+				<Separator />
+				<MenuItem Header="Cu_t" Command="{Binding CutCommand}"
+                          InputGesture="Ctrl+X" />
+				<MenuItem Header="_Copy" Command="{Binding CopyCommand}"
+                          InputGesture="Ctrl+C" />
+				<MenuItem Header="_Paste" Command="{Binding PasteCommand}"
+                          InputGesture="Ctrl+V" />
+				<MenuItem Header="De_lete" Command="{Binding DeleteCommand}"
+                          InputGesture="Delete" />
+				<Separator />
+				<MenuItem Header="_Find..." Command="{Binding ShowFindDialogCommand}"
+                          InputGesture="Ctrl+F" />
+				<MenuItem Header="Find _Next" Command="{Binding FindNextCommand}"
+                          InputGesture="F3" />
+				<MenuItem Header="_Replace..." Command="{Binding ShowReplaceDialogCommand}"
+                          InputGesture="Ctrl+H" />
+				<MenuItem Header="_Go To..." Command="{Binding GoToLineCommand}"
+                          InputGesture="Ctrl+G" />
+				<Separator />
+				<MenuItem Header="Select _All" Command="{Binding SelectAllCommand}"
+                          InputGesture="Ctrl+A" />
+				<MenuItem Header="Time/_Date" Command="{Binding InsertDateTimeCommand}"
+                          InputGesture="F5" />
+			</MenuItem>
+
+			<MenuItem Header="F_ormat">
+				<MenuItem Header="_Word Wrap"
+                          Command="{Binding ToggleWordWrapCommand}"
+                          IsChecked="{Binding Settings.WordWrap}" />
+				<MenuItem Header="_Font..." Command="{Binding ChangeFontCommand}" />
+			</MenuItem>
+
+			<MenuItem Header="_View">
+				<MenuItem Header="_Zoom">
+					<!--<MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}"
+                              InputGesture="Ctrl+Plus" />
+					<MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}"
+                              InputGesture="Ctrl+Minus" />-->
+					<MenuItem Header="_Restore Default Zoom"
+                              Command="{Binding RestoreZoomCommand}"
+                              InputGesture="Ctrl+0" />
+				</MenuItem>
+				<MenuItem Header="_Status Bar"
+                          Command="{Binding ToggleStatusBarCommand}"
+                          IsChecked="{Binding Settings.ShowStatusBar}" />
+			</MenuItem>
+
+			<MenuItem Header="_Help">
+				<MenuItem Header="View _Help" Command="{Binding ViewHelpCommand}" />
+				<!--<MenuItem Header="Send _Feedback" Command="{Binding SendFeedbackCommand}" />-->
+				<Separator />
+				<MenuItem Header="_About Notepad" Command="{Binding ShowAboutCommand}" />
+			</MenuItem>
+		</Menu>
+
+		<!-- Status Bar -->
+		<Grid DockPanel.Dock="Bottom"
+              IsVisible="{Binding Settings.ShowStatusBar}"
+              Height="24"
+              Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+			<Grid.ColumnDefinitions>
+				<ColumnDefinition Width="*" />
+				<ColumnDefinition Width="Auto" />
+				<ColumnDefinition Width="Auto" />
+				<ColumnDefinition Width="Auto" />
+			</Grid.ColumnDefinitions>
+
+			<TextBlock Grid.Column="0"
+                       Text="{Binding StatusText}"
+                       VerticalAlignment="Center"
+                       Margin="8,0" />
+			<TextBlock Grid.Column="1"
+                       Text="{Binding Settings.ZoomLevel, StringFormat={}{0}%}"
+                       VerticalAlignment="Center"
+                       Margin="8,0" />
+			<TextBlock Grid.Column="2"
+                       Text="{Binding EncodingText}"
+                       VerticalAlignment="Center"
+                       Margin="8,0" />
+			<TextBlock Grid.Column="3"
+                       Text="{Binding LineEndingText}"
+                       VerticalAlignment="Center"
+                       Margin="8,0" />
+		</Grid>
+
+        <!-- Main Editor -->
+        <avaloniaEdit:TextEditor Name="Editor" Background="White" Foreground="Black" MinHeight="300"
+                                 Document="{Binding TextDocument}"
+                                 FontFamily="{Binding Settings.FontFamily}"
+                                 FontSize="{Binding Settings.FontSize}"
+                                 WordWrap="{Binding Settings.WordWrap}"
+                                 ShowLineNumbers="False"
+                                 HorizontalAlignment="Stretch"
+                                 VerticalAlignment="Stretch"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 VerticalScrollBarVisibility="Auto" />
+	</DockPanel>
 </Window>
