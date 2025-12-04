@@ -25,14 +25,15 @@ public partial class App : Application
             // Avoid duplicate validations from both Avalonia and the CommunityToolkit. 
             // More info: https://docs.avaloniaui.net/docs/guides/development-guides/data-validation#manage-validationplugins
             DisableAvaloniaDataAnnotationValidation();
-            desktop.MainWindow = new MainWindow
-            {
-                DataContext = new MainWindowViewModel(
-                    new FileService(),
-                    new SearchService(),
-                    new SettingsService()
-                    ),
-            };
+                desktop.MainWindow = new MainWindow
+                {
+                    DataContext = new MainWindowViewModel(
+                        new FileService(),
+                        new SearchService(),
+                        new SettingsService(),
+                        new PrintService()
+                        ),
+                };
 
             // Handle command line arguments (open files)
             if (desktop.Args?.Length > 0)

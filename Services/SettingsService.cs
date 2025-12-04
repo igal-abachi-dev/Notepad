@@ -1,9 +1,8 @@
 
 using NotepadAvalonia.Models;
 using System;
+using System.Collections.Generic;
 using System.IO;
-
-
 using System.Text.Json;
 
 
@@ -16,8 +15,15 @@ public class SettingsService
 {
     private readonly string _settingsPath;
 
-    public SettingsService()
+    public SettingsService(string? settingsPath = null)
     {
+        if (!string.IsNullOrWhiteSpace(settingsPath))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+            _settingsPath = settingsPath;
+            return;
+        }
+
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var settingsDir = Path.Combine(appData, "NotepadAvalonia");
         Directory.CreateDirectory(settingsDir);
@@ -66,10 +72,19 @@ public class SettingsService
         SaveAll(all);
     }
 
+    public List<string> LoadRecentFiles() => LoadAll().RecentFiles ?? new List<string>();
+    public void SaveRecentFiles(IEnumerable<string> files)
+    {
+        var all = LoadAll();
+        all.RecentFiles = new List<string>(files);
+        SaveAll(all);
+    }
+
     private class AppSettings
     {
         public EditorSettings Editor { get; set; } = new();
         public SearchSettings Search { get; set; } = new();
         public PageSetupSettings PageSetup { get; set; } = new();
+        public List<string> RecentFiles { get; set; } = new();
     }
 }

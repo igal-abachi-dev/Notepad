@@ -28,6 +28,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly FileService _fileService;
     private readonly SearchService _searchService;
     private readonly SettingsService _settingsService;
+    private readonly PrintService _printService;
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -59,18 +60,26 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _lineEndingText = "CRLF";
 
+    public ObservableCollection<string> RecentFiles { get; } = new();
+
     public MainWindowViewModel(
         FileService fileService,
         SearchService searchService,
-        SettingsService settingsService)
+        SettingsService settingsService,
+        PrintService printService)
     {
         _fileService = fileService;
         _searchService = searchService;
         _settingsService = settingsService;
+        _printService = printService;
 
         _settings = _settingsService.LoadEditorSettings();
         _searchSettings = _settingsService.LoadSearchSettings();
         _pageSetupSettings = _settingsService.LoadPageSetupSettings();
+        foreach (var path in _settingsService.LoadRecentFiles())
+        {
+            RecentFiles.Add(path);
+        }
 
         TextDocument.TextChanged += OnTextChanged;
         OnPropertyChanged(nameof(EditorFontSize));
@@ -170,6 +179,7 @@ public partial class MainWindowViewModel : ObservableObject
 
             UpdateEncodingDisplay();
             UpdateStatus();
+            AddRecentFile(path);
         }
         catch (Exception ex)
         {
@@ -236,6 +246,7 @@ public partial class MainWindowViewModel : ObservableObject
             Document.IsUntitled = false;
             Document.IsModified = false;
             OnPropertyChanged(nameof(Document));
+            AddRecentFile(path);
         }
         catch (Exception ex)
         {
@@ -337,9 +348,16 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task PrintAsync() 
     {
+        var pages = _printService.Paginate(
+            TextDocument.Text,
+            Document,
+            PageSetupSettings,
+            charsPerLine: 80,
+            linesPerPage: 50);
+
         await MessageBoxManager.GetMessageBoxStandard(
             "Notepad",
-            "Printing is not implemented yet.",
+            $"Prepared {pages.Count} page(s) for printing (platform-specific rendering not yet implemented).",
             ButtonEnum.Ok).ShowAsync();
     }
 
@@ -584,6 +602,25 @@ public partial class MainWindowViewModel : ObservableObject
         return result == ButtonResult.No;
     }
 
+    [RelayCommand]
+    private async Task OpenRecentFileAsync(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (!File.Exists(path))
+        {
+            RecentFiles.Remove(path);
+            _settingsService.SaveRecentFiles(RecentFiles);
+            await ShowErrorAsync("File not found.");
+            return;
+        }
+
+        if (!await CheckSaveChangesAsync()) return;
+
+        await LoadFileAsync(path);
+    }
+
     public void UpdateCaretPosition(int line, int column)
     {
         CaretLine = line;
@@ -622,9 +659,29 @@ public partial class MainWindowViewModel : ObservableObject
         _settingsService.SaveEditorSettings(Settings);
         _settingsService.SaveSearchSettings(SearchSettings);
         _settingsService.SavePageSetupSettings(PageSetupSettings);
+        _settingsService.SaveRecentFiles(RecentFiles);
     }
 
     public bool CanUseGoToLine => !Settings.WordWrap;
+
+    private void AddRecentFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        var existingIndex = RecentFiles.IndexOf(path);
+        if (existingIndex >= 0)
+        {
+            RecentFiles.RemoveAt(existingIndex);
+        }
+
+        RecentFiles.Insert(0, path);
+        while (RecentFiles.Count > 10)
+        {
+            RecentFiles.RemoveAt(RecentFiles.Count - 1);
+        }
+
+        _settingsService.SaveRecentFiles(RecentFiles);
+    }
 
     // TextEditor reference (set from View)
     public AvaloniaEdit.TextEditor? TextEditor { get; set; }

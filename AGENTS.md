@@ -2,13 +2,14 @@
 
 ## Project Structure & Module Organization
 - Root: `Program.cs`, `App.axaml`, `App.axaml.cs`, and `Notepad.csproj` targeting .NET 9.
-- UI markup lives in `Views/` (e.g., `MainWindow.axaml` plus dialog views like `FindReplaceDialog.axaml`, `GoToLineDialog.axaml`, `FontDialog.axaml`, `AboutDialog.axaml`) with code-behind; UI state sits in `ViewModels/` (`MainWindowViewModel`, `FindReplaceViewModel`, `GoToLineViewModel`, `PageSetupViewModel`).
-- Domain models reside in `Models/` (`DocumentModel`, `EditorSettings`, `PageSetupSettings`, `SearchSettings`); supporting services are in `Services/` (`FileService`, `SearchService`, `SettingsService`, `PrintService`); value converters live in `Converters/`; assets stay under `Assets/`.
+- UI markup lives in `Views/` (e.g., `MainWindow.axaml` plus dialogs like `FindReplaceDialog.axaml`, `GoToLineDialog.axaml`, `FontDialog.axaml`, `PageSetupDialog.axaml`, `AboutDialog.axaml`) with code-behind; UI state sits in `ViewModels/` (`MainWindowViewModel`, `FindReplaceViewModel`, `GoToLineViewModel`, `PageSetupViewModel`).
+- Domain models reside in `Models/` (`DocumentModel`, `EditorSettings`, `PageSetupSettings`, `SearchSettings`); supporting services are in `Services/` (`FileService`, `SearchService`, `SettingsService`, `PrintService`); value converters live in `Converters/`; assets stay under `Assets/`. Tests live in `Tests/` (xUnit, `Notepad.Tests.csproj`).
 
 ## Build, Test, and Development Commands
 - `dotnet restore` - install NuGet dependencies.
 - `dotnet build` - compile and fail fast on errors.
 - `dotnet run` - launch the Avalonia Notepad app locally.
+- `dotnet test` - run xUnit suites under `Tests/`.
 - `dotnet publish -c Release -r win-x64 --self-contained` - produce a Windows release build; swap the RID for Linux/macOS.
 - Optional: `dotnet watch run` for live recompilation during UI work.
 
@@ -19,9 +20,9 @@
 - Prefer `async`/`await` for file dialogs and I/O; avoid blocking the UI thread.
 
 ## Testing Guidelines
-- No dedicated test project yet; add xUnit/NUnit tests under `Tests/` focusing on `Services/` and `ViewModels/` behavior.
-- Name files after the unit under test (e.g., `FileServiceTests.cs`) and methods as `Method_Scenario_ExpectedResult`.
-- Run suites with `dotnet test`; include happy-path and edge cases for new features.
+- Tests live under `Tests/` using xUnit; name files after the unit under test (e.g., `FileServiceTests.cs`, `SearchServiceTests.cs`).
+- Use method names `Method_Scenario_ExpectedResult` where helpful; cover happy-path and edge cases for services/viewmodels (file encodings, search/replace, print pagination, recent files, settings behavior).
+- Run suites with `dotnet test`; add coverage for new features/services as they land.
 
 ## Commit & Pull Request Guidelines
 - Use clear, present-tense commit subjects (50-72 chars); Conventional Commit prefixes (`feat:`, `fix:`, `docs:`) encouraged.
