@@ -44,13 +44,13 @@
 				<MenuItem Header="Save _As..." Command="{Binding SaveFileAsCommand}"
                           InputGesture="Ctrl+Shift+S" />
                 <MenuItem Header="Recent _Files" ItemsSource="{Binding RecentFiles}">
-                    <MenuItem.ItemTemplate>
+                    <!--<MenuItem.ItemTemplate>
                         <DataTemplate>
                             <MenuItem Header="{Binding .}"
                                       Command="{Binding DataContext.OpenRecentFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                       CommandParameter="{Binding .}" />
                         </DataTemplate>
-                    </MenuItem.ItemTemplate>
+                    </MenuItem.ItemTemplate>-->
                 </MenuItem>
 				<Separator />
 				<MenuItem Header="Page Set_up..." Command="{Binding ShowPageSetupDialogCommand}" />

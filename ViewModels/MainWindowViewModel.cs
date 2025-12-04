@@ -40,7 +40,7 @@ public partial class MainWindowViewModel : ObservableObject
     private SearchSettings _searchSettings = new();
 
     [ObservableProperty]
-    private TextDocument _textDocument = new();
+    private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
 
     [ObservableProperty]
     private PageSetupSettings _pageSetupSettings = new();
@@ -603,7 +603,7 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task OpenRecentFileAsync(string? path)
+    public async Task OpenRecentFileAsync(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
             return;
