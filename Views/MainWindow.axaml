@@ -71,7 +71,8 @@
 				<MenuItem Header="_Replace..." Command="{Binding ShowReplaceDialogCommand}"
                           InputGesture="Ctrl+H" />
 				<MenuItem Header="_Go To..." Command="{Binding GoToLineCommand}"
-                          InputGesture="Ctrl+G" />
+                          InputGesture="Ctrl+G"
+                          IsEnabled="{Binding CanUseGoToLine}" />
 				<Separator />
 				<MenuItem Header="Select _All" Command="{Binding SelectAllCommand}"
                           InputGesture="Ctrl+A" />
@@ -98,7 +99,8 @@
 				</MenuItem>
 				<MenuItem Header="_Status Bar"
                           Command="{Binding ToggleStatusBarCommand}"
-                          IsChecked="{Binding Settings.ShowStatusBar}" />
+                          IsChecked="{Binding Settings.ShowStatusBar}"
+                          IsEnabled="{Binding CanUseGoToLine}" />
 			</MenuItem>
 
 			<MenuItem Header="_Help">

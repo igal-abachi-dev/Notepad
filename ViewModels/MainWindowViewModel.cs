@@ -89,6 +89,8 @@ public partial class MainWindowViewModel : ObservableObject
             Document.IsModified = true;
             OnPropertyChanged(nameof(Document));
         }
+
+        UpdateStatus();
     }
 
     partial void OnTextDocumentChanging(TextDocument value)
@@ -449,6 +451,14 @@ public partial class MainWindowViewModel : ObservableObject
     {
         Settings.WordWrap = !Settings.WordWrap;
         OnPropertyChanged(nameof(Settings));
+        OnPropertyChanged(nameof(CanUseGoToLine));
+
+        if (Settings.WordWrap && Settings.ShowStatusBar)
+        {
+            Settings.ShowStatusBar = false;
+            OnPropertyChanged(nameof(Settings));
+        }
+
         _settingsService.SaveEditorSettings(Settings);
     }
 
@@ -491,6 +501,10 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleStatusBar()
     {
+        if (Settings.WordWrap)
+        {
+            return; // Notepad behavior: disabled when word wrap is on
+        }
         Settings.ShowStatusBar = !Settings.ShowStatusBar;
         OnPropertyChanged(nameof(Settings));
         _settingsService.SaveEditorSettings(Settings);
@@ -505,6 +519,8 @@ public partial class MainWindowViewModel : ObservableObject
         Settings.ZoomLevel = Math.Min(500, Settings.ZoomLevel + 10);
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(EditorFontSize));
+        OnPropertyChanged(nameof(EditorFontWeight));
+        OnPropertyChanged(nameof(EditorFontStyle));
         _settingsService.SaveEditorSettings(Settings);
     }
 
@@ -514,6 +530,8 @@ public partial class MainWindowViewModel : ObservableObject
         Settings.ZoomLevel = Math.Max(10, Settings.ZoomLevel - 10);
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(EditorFontSize));
+        OnPropertyChanged(nameof(EditorFontWeight));
+        OnPropertyChanged(nameof(EditorFontStyle));
         _settingsService.SaveEditorSettings(Settings);
     }
 
@@ -523,6 +541,8 @@ public partial class MainWindowViewModel : ObservableObject
         Settings.ZoomLevel = 100;
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(EditorFontSize));
+        OnPropertyChanged(nameof(EditorFontWeight));
+        OnPropertyChanged(nameof(EditorFontStyle));
         _settingsService.SaveEditorSettings(Settings);
     }
 
@@ -584,7 +604,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateStatus()
     {
-        StatusText = "Ready";
+        StatusText = $"Ln {CaretLine}, Col {CaretColumn}";
     }
 
     public void SaveWindowPlacement(PixelPoint position, Size size)
@@ -603,6 +623,8 @@ public partial class MainWindowViewModel : ObservableObject
         _settingsService.SaveSearchSettings(SearchSettings);
         _settingsService.SavePageSetupSettings(PageSetupSettings);
     }
+
+    public bool CanUseGoToLine => !Settings.WordWrap;
 
     // TextEditor reference (set from View)
     public AvaloniaEdit.TextEditor? TextEditor { get; set; }
