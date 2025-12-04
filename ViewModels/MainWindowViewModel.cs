@@ -8,12 +8,12 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
-using System.Reflection.Metadata;
 using System.Text;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Media;
 using NotepadAvalonia.Views;
 using MsBox.Avalonia;
 using MsBox.Avalonia.Enums;
@@ -39,7 +39,10 @@ public partial class MainWindowViewModel : ObservableObject
     private SearchSettings _searchSettings = new();
 
     [ObservableProperty]
-    private TextDocument _textDocument = new("hello world".ToCharArray());
+    private TextDocument _textDocument = new();
+
+    [ObservableProperty]
+    private PageSetupSettings _pageSetupSettings = new();
 
     [ObservableProperty]
     private int _caretLine = 1;
@@ -67,17 +70,35 @@ public partial class MainWindowViewModel : ObservableObject
 
         _settings = _settingsService.LoadEditorSettings();
         _searchSettings = _settingsService.LoadSearchSettings();
+        _pageSetupSettings = _settingsService.LoadPageSetupSettings();
 
-        _textDocument.TextChanged += OnTextChanged;
+        TextDocument.TextChanged += OnTextChanged;
+        OnPropertyChanged(nameof(EditorFontSize));
+        OnPropertyChanged(nameof(EditorFontWeight));
+        OnPropertyChanged(nameof(EditorFontStyle));
     }
+
+    public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
+    public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
+    public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
 
     private void OnTextChanged(object? sender, EventArgs e)
     {
-        if (!_document.IsModified)
+        if (!Document.IsModified)
         {
-            _document.IsModified = true;
+            Document.IsModified = true;
             OnPropertyChanged(nameof(Document));
         }
+    }
+
+    partial void OnTextDocumentChanging(TextDocument value)
+    {
+        TextDocument.TextChanged -= OnTextChanged;
+    }
+
+    partial void OnTextDocumentChanged(TextDocument value)
+    {
+        TextDocument.TextChanged += OnTextChanged;
     }
 
     // ==================== File Commands ====================
@@ -90,21 +111,29 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (!await CheckSaveChangesAsync()) return;
 
-        _textDocument = new TextDocument();
-        _document = new DocumentModel();
+        TextDocument = new TextDocument();
+        Document = new DocumentModel();
+        UpdateEncodingDisplay();
         UpdateStatus();
+        UpdateCaretPosition(1, 1);
     }
 
     /// <summary>
     /// Maps to: Command ID 2, function_140008c18
     /// </summary>
     [RelayCommand]
-    public async Task OpenFileAsync()
+    public async Task OpenFileAsync(string? path = null)
     {
         if (!await CheckSaveChangesAsync()) return;
 
+        if (!string.IsNullOrEmpty(path))
+        {
+            await LoadFileAsync(path);
+            return;
+        }
+
         // Use Avalonia's file picker
-        var dialog = new OpenFileDialog //todo custom open file dialog
+        var dialog = new OpenFileDialog
         {
             Title = "Open",
             Filters = new List<FileDialogFilter>
@@ -127,8 +156,8 @@ public partial class MainWindowViewModel : ObservableObject
         {
             var (content, encoding, lineEnding) = await _fileService.LoadFileAsync(path);
 
-            _textDocument = new TextDocument(content);
-            _document = new DocumentModel
+            TextDocument = new TextDocument(content);
+            Document = new DocumentModel
             {
                 FilePath = path,
                 IsUntitled = false,
@@ -152,13 +181,13 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveFileAsync()
     {
-        if (_document.IsUntitled)
+        if (Document.IsUntitled)
         {
             await SaveFileAsAsync();
             return;
         }
 
-        await SaveToFileAsync(_document.FilePath);
+        await SaveToFileAsync(Document.FilePath);
     }
 
     /// <summary>
@@ -178,10 +207,10 @@ public partial class MainWindowViewModel : ObservableObject
             }
         };
 
-        if (!_document.IsUntitled)
+        if (!Document.IsUntitled)
         {
-            dialog.InitialFileName = Path.GetFileName(_document.FilePath);
-            dialog.Directory = Path.GetDirectoryName(_document.FilePath);
+            dialog.InitialFileName = Path.GetFileName(Document.FilePath);
+            dialog.Directory = Path.GetDirectoryName(Document.FilePath);
         }
 
         var result = await dialog.ShowAsync(GetMainWindow());
@@ -197,13 +226,13 @@ public partial class MainWindowViewModel : ObservableObject
         {
             await _fileService.SaveFileAsync(
                 path,
-                _textDocument.Text,
-                _document.Encoding,
-                _document.LineEnding);
+                TextDocument.Text,
+                Document.Encoding,
+                Document.LineEnding);
 
-            _document.FilePath = path;
-            _document.IsUntitled = false;
-            _document.IsModified = false;
+            Document.FilePath = path;
+            Document.IsUntitled = false;
+            Document.IsModified = false;
             OnPropertyChanged(nameof(Document));
         }
         catch (Exception ex)
@@ -279,7 +308,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         // Open find dialog (modeless)
         var dialog = new FindReplaceDialog(this, findMode: true);
-        dialog.Show();
+        dialog.Show(GetMainWindow());
     }
 
     /// <summary>
@@ -289,23 +318,37 @@ public partial class MainWindowViewModel : ObservableObject
     private void ShowReplaceDialog()
     {
         var dialog = new FindReplaceDialog(this, findMode: false);
-        dialog.Show();
+        dialog.Show(GetMainWindow());
     }
 
     [RelayCommand]
-    private void ShowPageSetupDialog() //todo: add dialog xaml
+    private async Task ShowPageSetupDialog()
     {
-        //var dialog = new PageSetupDialog(this);
-        //dialog.Show();
+        var dialog = new PageSetupDialog(PageSetupSettings);
+        var result = await dialog.ShowDialog<PageSetupSettings?>(GetMainWindow());
+        if (result != null)
+        {
+            PageSetupSettings = result;
+            _settingsService.SavePageSetupSettings(PageSetupSettings);
+        }
     }
     [RelayCommand]
-    private void Print() 
+    private async Task PrintAsync() 
     {
+        await MessageBoxManager.GetMessageBoxStandard(
+            "Notepad",
+            "Printing is not implemented yet.",
+            ButtonEnum.Ok).ShowAsync();
     }
 
     [RelayCommand]
-    private void OnExit()
+    private async Task OnExitAsync()
     {
+        if (await CheckSaveChangesAsync())
+        {
+            SaveSessionSettings();
+            GetMainWindow().Close();
+        }
     }
 
     /// <summary>
@@ -315,6 +358,11 @@ public partial class MainWindowViewModel : ObservableObject
     private void FindNext()
     {
         if (TextEditor == null) return;
+        if (string.IsNullOrEmpty(SearchSettings.SearchString))
+        {
+            StatusText = "Find what?";
+            return;
+        }
 
         var result = SearchSettings.SearchUp
             ? _searchService.FindPrevious(TextEditor, SearchSettings)
@@ -331,16 +379,56 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    [RelayCommand]
+    private void ReplaceNext()
+    {
+        if (TextEditor == null) return;
+        if (string.IsNullOrEmpty(SearchSettings.SearchString))
+        {
+            StatusText = "Find what?";
+            return;
+        }
+
+        var replaced = _searchService.ReplaceNext(TextEditor, SearchSettings);
+        if (replaced == 0)
+        {
+            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
+            return;
+        }
+
+        Document.IsModified = true;
+        OnPropertyChanged(nameof(Document));
+    }
+
+    [RelayCommand]
+    private void ReplaceAll()
+    {
+        if (TextEditor == null) return;
+        if (string.IsNullOrEmpty(SearchSettings.SearchString))
+        {
+            StatusText = "Find what?";
+            return;
+        }
+
+        var count = _searchService.ReplaceAll(TextEditor, SearchSettings);
+        if (count == 0)
+        {
+            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
+            return;
+        }
+
+        StatusText = $"Replaced {count} occurrence{(count == 1 ? "" : "s")}";
+        Document.IsModified = true;
+        OnPropertyChanged(nameof(Document));
+    }
+
     /// <summary>
     /// Maps to: Command ID 24 (Go To dialog)
     /// </summary>
     [RelayCommand]
     private async Task GoToLineAsync()
     {
-        var dialog = new GoToLineDialog
-        {
-            MaxLine = TextDocument.LineCount
-        };
+        var dialog = new GoToLineDialog(TextDocument.LineCount);
 
         var result = await dialog.ShowDialog<int?>(GetMainWindow());
         if (result.HasValue && TextEditor != null)
@@ -375,15 +463,22 @@ public partial class MainWindowViewModel : ObservableObject
         var dialog = new FontDialog
         {
             FontFamily = Settings.FontFamily,
-            FontSize = Settings.FontSize
+            FontSize = Settings.FontSize,
+            IsBold = Settings.IsBold,
+            IsItalic = Settings.IsItalic
         };
 
         var result = await dialog.ShowDialog<bool>(GetMainWindow());
         if (result)
         {
-            Settings.FontFamily = dialog.FontFamily.Name;
+            Settings.FontFamily = dialog.FontFamily;
             Settings.FontSize = dialog.FontSize;
+            Settings.IsBold = dialog.IsBold;
+            Settings.IsItalic = dialog.IsItalic;
             OnPropertyChanged(nameof(Settings));
+            OnPropertyChanged(nameof(EditorFontSize));
+            OnPropertyChanged(nameof(EditorFontWeight));
+            OnPropertyChanged(nameof(EditorFontStyle));
             _settingsService.SaveEditorSettings(Settings);
         }
     }
@@ -409,6 +504,8 @@ public partial class MainWindowViewModel : ObservableObject
     {
         Settings.ZoomLevel = Math.Min(500, Settings.ZoomLevel + 10);
         OnPropertyChanged(nameof(Settings));
+        OnPropertyChanged(nameof(EditorFontSize));
+        _settingsService.SaveEditorSettings(Settings);
     }
 
     [RelayCommand]
@@ -416,6 +513,8 @@ public partial class MainWindowViewModel : ObservableObject
     {
         Settings.ZoomLevel = Math.Max(10, Settings.ZoomLevel - 10);
         OnPropertyChanged(nameof(Settings));
+        OnPropertyChanged(nameof(EditorFontSize));
+        _settingsService.SaveEditorSettings(Settings);
     }
 
     [RelayCommand]
@@ -423,6 +522,8 @@ public partial class MainWindowViewModel : ObservableObject
     {
         Settings.ZoomLevel = 100;
         OnPropertyChanged(nameof(Settings));
+        OnPropertyChanged(nameof(EditorFontSize));
+        _settingsService.SaveEditorSettings(Settings);
     }
 
     // ==================== Help Commands ====================
@@ -473,12 +574,34 @@ public partial class MainWindowViewModel : ObservableObject
     private void UpdateEncodingDisplay()
     {
         EncodingText = Document.Encoding.WebName.ToUpperInvariant();
-        LineEndingText = Document.LineEnding.ToString();
+        LineEndingText = Document.LineEnding switch
+        {
+            LineEndingStyle.CR => "CR",
+            LineEndingStyle.LF => "LF",
+            _ => "CRLF"
+        };
     }
 
     private void UpdateStatus()
     {
         StatusText = "Ready";
+    }
+
+    public void SaveWindowPlacement(PixelPoint position, Size size)
+    {
+        Settings.WindowX = position.X;
+        Settings.WindowY = position.Y;
+        Settings.WindowWidth = (int)size.Width;
+        Settings.WindowHeight = (int)size.Height;
+        OnPropertyChanged(nameof(Settings));
+        _settingsService.SaveEditorSettings(Settings);
+    }
+
+    public void SaveSessionSettings()
+    {
+        _settingsService.SaveEditorSettings(Settings);
+        _settingsService.SaveSearchSettings(SearchSettings);
+        _settingsService.SavePageSetupSettings(PageSetupSettings);
     }
 
     // TextEditor reference (set from View)

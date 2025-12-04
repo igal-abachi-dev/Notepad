@@ -101,6 +101,9 @@ public class FileService
             }
         }
 
+        if (crlf == 0 && lf == 0 && cr == 0)
+            return LineEndingStyle.CRLF;
+
         if (crlf >= lf && crlf >= cr) return LineEndingStyle.CRLF;
         if (lf >= cr) return LineEndingStyle.LF;
         return LineEndingStyle.CR;

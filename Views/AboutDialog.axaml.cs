@@ -8,4 +8,9 @@ public partial class AboutDialog : Window
     {
         InitializeComponent();
     }
+
+    private void OnClose(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        Close();
+    }
 }

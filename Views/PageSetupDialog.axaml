@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="NotepadAvalonia.Views.PageSetupDialog"
+        Width="360"
+        Height="300"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="Page Setup"
+        x:CompileBindings="False">
+  <StackPanel Margin="12" Spacing="10">
+    <StackPanel>
+      <TextBlock Text="_Header" />
+      <TextBox Text="{Binding Header}" />
+    </StackPanel>
+    <StackPanel>
+      <TextBlock Text="_Footer" />
+      <TextBox Text="{Binding Footer}" />
+    </StackPanel>
+
+    <StackPanel>
+      <TextBlock Text="Margins (mm)" FontWeight="Bold" Margin="0,4,0,4" />
+      <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="6">
+        <StackPanel>
+          <TextBlock Text="_Left" />
+          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginLeft}" />
+        </StackPanel>
+        <StackPanel Grid.Column="1">
+          <TextBlock Text="_Right" />
+          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginRight}" />
+        </StackPanel>
+        <StackPanel Grid.Row="1">
+          <TextBlock Text="_Top" />
+          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginTop}" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" Grid.Column="1">
+          <TextBlock Text="_Bottom" />
+          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginBottom}" />
+        </StackPanel>
+      </Grid>
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="OK" MinWidth="80" Click="OnOk" />
+      <Button Content="Cancel" MinWidth="80" Click="OnCancel" />
+    </StackPanel>
+  </StackPanel>
+</Window>

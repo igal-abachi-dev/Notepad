@@ -141,9 +141,11 @@
 
         <!-- Main Editor -->
         <avaloniaEdit:TextEditor Name="Editor" Background="White" Foreground="Black" MinHeight="300"
-                                 Document="{Binding TextDocument}"
+                                 Document="{Binding TextDocument, Mode=TwoWay}"
                                  FontFamily="{Binding Settings.FontFamily}"
-                                 FontSize="{Binding Settings.FontSize}"
+                                 FontSize="{Binding EditorFontSize}"
+                                 FontWeight="{Binding EditorFontWeight}"
+                                 FontStyle="{Binding EditorFontStyle}"
                                  WordWrap="{Binding Settings.WordWrap}"
                                  ShowLineNumbers="False"
                                  HorizontalAlignment="Stretch"

@@ -78,15 +78,15 @@ public class SearchService
 
             if (forward)
             {
-                foundPos = text.IndexOf(searchText, startPos, comparison);
+                foundPos = FindForward(text, searchText, startPos, comparison, settings.WholeWord);
                 if (foundPos == -1 && settings.WrapAround)
-                    foundPos = text.IndexOf(searchText, 0, comparison);
+                    foundPos = FindForward(text, searchText, 0, comparison, settings.WholeWord);
             }
             else
             {
-                foundPos = text.LastIndexOf(searchText, startPos, comparison);
+                foundPos = FindBackward(text, searchText, startPos, comparison, settings.WholeWord);
                 if (foundPos == -1 && settings.WrapAround)
-                    foundPos = text.LastIndexOf(searchText, comparison);
+                    foundPos = FindBackward(text, searchText, text.Length - 1, comparison, settings.WholeWord);
             }
 
             if (foundPos >= 0)
@@ -109,26 +109,100 @@ public class SearchService
 
     public int ReplaceAll(TextEditor editor, SearchSettings settings)
     {
-        int count = 0;
-        var document = editor.Document;
-
-        // Work backwards to avoid offset issues
-        var text = document.Text;
-        var searchText = settings.SearchString;
-        var comparison = settings.MatchCase
-            ? StringComparison.Ordinal
-            : StringComparison.OrdinalIgnoreCase;
-
-        int pos = text.Length;
-        while ((pos = text.LastIndexOf(searchText, pos - 1, comparison)) >= 0)
+        if (string.IsNullOrEmpty(settings.SearchString))
         {
-            document.Replace(pos, searchText.Length, settings.ReplaceString);
-            text = document.Text;
-            count++;
-            if (pos == 0) break;
+            return 0;
+        }
+
+        int count = 0;
+        var text = editor.Document.Text;
+
+        if (settings.UseRegex)
+        {
+            var options = settings.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
+            var regex = new Regex(settings.SearchString, options);
+            var matches = regex.Matches(text);
+            count = matches.Count;
+            if (count > 0)
+            {
+                text = regex.Replace(text, settings.ReplaceString);
+            }
+        }
+        else
+        {
+            var comparison = settings.MatchCase
+                ? StringComparison.Ordinal
+                : StringComparison.OrdinalIgnoreCase;
+
+            int index = 0;
+            while ((index = text.IndexOf(settings.SearchString, index, comparison)) >= 0)
+            {
+                if (settings.WholeWord && !IsWholeWordMatch(text, index, settings.SearchString.Length))
+                {
+                    index += settings.SearchString.Length;
+                    continue;
+                }
+
+                text = text.Remove(index, settings.SearchString.Length)
+                           .Insert(index, settings.ReplaceString);
+                index += settings.ReplaceString.Length;
+                count++;
+            }
+        }
+
+        if (count > 0)
+        {
+            editor.Document.Text = text;
         }
 
         return count;
     }
+
+    private int FindForward(string text, string searchText, int startPos, StringComparison comparison, bool wholeWord)
+    {
+        int index = startPos;
+        while (index <= text.Length)
+        {
+            index = text.IndexOf(searchText, index, comparison);
+            if (index < 0) break;
+            if (!wholeWord || IsWholeWordMatch(text, index, searchText.Length))
+            {
+                return index;
+            }
+            index += searchText.Length;
+        }
+
+        return -1;
+    }
+
+    private int FindBackward(string text, string searchText, int startPos, StringComparison comparison, bool wholeWord)
+    {
+        int index = startPos;
+        while (index >= 0)
+        {
+            index = text.LastIndexOf(searchText, index, comparison);
+            if (index < 0) break;
+            if (!wholeWord || IsWholeWordMatch(text, index, searchText.Length))
+            {
+                return index;
+            }
+            index -= 1;
+        }
+
+        return -1;
+    }
+
+    private bool IsWholeWordMatch(string text, int index, int length)
+    {
+        int before = index - 1;
+        int after = index + length;
+
+        bool startBoundary = before < 0 || !IsWordChar(text[before]);
+        bool endBoundary = after >= text.Length || !IsWordChar(text[after]);
+
+        return startBoundary && endBoundary;
+    }
+
+    private bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 }
 public record SearchResult(int StartOffset, int Length);

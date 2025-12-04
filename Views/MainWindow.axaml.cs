@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using AvaloniaEdit;
@@ -11,25 +12,50 @@ namespace NotepadAvalonia.Views;
 public partial class MainWindow : Window
 {
     public MainWindowViewModel ViewModel => (MainWindowViewModel)DataContext!;
+    private TextEditor? _editor;
     public MainWindow()
     {
         InitializeComponent();
 
+        _editor = this.FindControl<TextEditor>("Editor");
+        DataContextChanged += OnDataContextChanged;
+
         // Wire up editor events
-        var editor = this.FindControl<TextEditor>("Editor");
-        if (editor != null)
+        if (_editor != null)
         {
-            editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
+            _editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
 
             // Give ViewModel access to editor for commands
-            if (DataContext is MainWindowViewModel vm)
-            {
-                vm.TextEditor = editor;
-            }
+            TryAttachEditorToViewModel();
+            Opened += (_, _) => _editor?.Focus();
         }
 
         // Handle drag-drop (maps to WM_DROPFILES)
         AddHandler(DragDrop.DropEvent, OnDrop);
+    }
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
+    {
+        TryAttachEditorToViewModel();
+        ApplyWindowPlacement();
+    }
+
+    private void TryAttachEditorToViewModel()
+    {
+        if (_editor == null) return;
+
+        if (DataContext is MainWindowViewModel vm)
+        {
+            vm.TextEditor = _editor;
+        }
+    }
+
+    private void ApplyWindowPlacement()
+    {
+        if (DataContext is MainWindowViewModel vm)
+        {
+            Position = new PixelPoint(vm.Settings.WindowX, vm.Settings.WindowY);
+        }
     }
 
     private void OnCaretPositionChanged(object? sender, EventArgs e)
@@ -54,7 +80,7 @@ public partial class MainWindow : Window
             if (files?.Count > 0 && DataContext is MainWindowViewModel vm)
             {
                 // Load first file (like original Notepad)
-                await vm.OpenFileCommand.ExecuteAsync(files[0]);
+                await vm.OpenFileAsync(files[0]);
             }
         }
     }
@@ -66,14 +92,16 @@ public partial class MainWindow : Window
             // Check for unsaved changes
             if (vm.Document.IsModified)
             {
-                e.Cancel = true;
                 var shouldClose = await vm.CheckSaveChangesAsync();
-                if (shouldClose)
+                if (!shouldClose)
                 {
-                    vm.Document.IsModified = false;
-                    Close();
+                    e.Cancel = true;
+                    return;
                 }
             }
+
+            vm.SaveWindowPlacement(Position, ClientSize);
+            vm.SaveSessionSettings();
         }
         base.OnClosing(e);
     }

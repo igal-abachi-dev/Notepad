@@ -1,4 +1,48 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="NotepadAvalonia.Views.FindReplaceDialog">
+        x:Class="NotepadAvalonia.Views.FindReplaceDialog"
+        Width="420"
+        Height="260"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="{Binding Title}"
+        x:CompileBindings="False">
+  <StackPanel Margin="12" Spacing="10">
+    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" Margin="0,0,0,6">
+      <TextBlock Text="_Find what:" Margin="0,0,10,6" VerticalAlignment="Center" />
+      <TextBox x:Name="FindTextBox"
+               Grid.Column="1"
+               Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"
+               MinWidth="220" />
+
+      <TextBlock Grid.Row="1" Text="Replace _with:" Margin="0,0,10,0" VerticalAlignment="Center"
+                 IsVisible="{Binding IsReplaceMode}" />
+      <TextBox Grid.Row="1"
+               Grid.Column="1"
+               Text="{Binding ReplaceText, UpdateSourceTrigger=PropertyChanged}"
+               IsVisible="{Binding IsReplaceMode}" />
+    </Grid>
+
+    <StackPanel Orientation="Horizontal" Spacing="16">
+      <StackPanel>
+        <CheckBox Content="_Match case" IsChecked="{Binding MatchCase}" />
+        <CheckBox Content="Wrap _around" IsChecked="{Binding WrapAround}" />
+        <CheckBox Content="Use rege_x" IsChecked="{Binding UseRegex}" />
+      </StackPanel>
+      <StackPanel>
+        <CheckBox Content="Direction: _Up" IsChecked="{Binding SearchUp}" />
+        <CheckBox Content="_Whole word" IsChecked="{Binding WholeWord}" />
+      </StackPanel>
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="_Find Next" Command="{Binding FindNextCommand}" MinWidth="90" />
+      <Button Content="_Replace" Command="{Binding ReplaceCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
+      <Button Content="Replace _All" Command="{Binding ReplaceAllCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
+      <Button Content="Cancel"
+              Command="{Binding CloseCommand}"
+              CommandParameter="{Binding $parent[Window]}"
+              MinWidth="90" />
+    </StackPanel>
+  </StackPanel>
 </Window>
