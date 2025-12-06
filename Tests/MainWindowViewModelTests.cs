@@ -19,7 +19,7 @@ public class MainWindowViewModelTests
     }
 
     [Fact]
-    public void ToggleWordWrap_DisablesStatusBarAndGoTo()
+    public void ToggleWordWrap_DisablesGoToOnly()
     {
         var settingsService = CreateSettingsService(out _);
         var vm = new MainWindowViewModel(new FileService(), new SearchService(), settingsService, new PrintService());
@@ -27,7 +27,7 @@ public class MainWindowViewModelTests
         vm.ToggleWordWrapCommand.Execute(null);
 
         Assert.True(vm.Settings.WordWrap);
-        Assert.False(vm.Settings.ShowStatusBar);
+        Assert.True(vm.Settings.ShowStatusBar);
         Assert.False(vm.CanUseGoToLine);
     }
 

@@ -30,8 +30,8 @@ public class FileService
 
     public async Task SaveFileAsync(string path, string content, FileEncodingType encodingType, LineEndingStyle lineEnding)
     {
-        // Normalize line endings
-        content = NormalizeLineEndings(content, lineEnding);
+        // Preserve existing line endings (do not normalize) to mirror classic Notepad behavior.
+        _ = lineEnding;
 
         var encoding = GetEncoding(encodingType);
 
@@ -137,19 +137,6 @@ public class FileService
              (bytes[0] == 0xFE && bytes[1] == 0xFF)))
             return 2;
         return 0;
-    }
-
-    private string NormalizeLineEndings(string content, LineEndingStyle style)
-    {
-        // First normalize to \n
-        content = content.Replace("\r\n", "\n").Replace("\r", "\n");
-
-        return style switch
-        {
-            LineEndingStyle.CRLF => content.Replace("\n", "\r\n"),
-            LineEndingStyle.CR => content.Replace("\n", "\r"),
-            _ => content // LF
-        };
     }
 
     private bool LooksLikeUtf8(byte[] bytes)

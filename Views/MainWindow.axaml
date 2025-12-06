@@ -108,8 +108,7 @@
 				</MenuItem>
 				<MenuItem Header="_Status Bar"
                           Command="{Binding ToggleStatusBarCommand}"
-                          IsChecked="{Binding Settings.ShowStatusBar}"
-                          IsEnabled="{Binding CanUseGoToLine}" />
+                          IsChecked="{Binding Settings.ShowStatusBar}" />
 			</MenuItem>
 
 			<MenuItem Header="_Help">

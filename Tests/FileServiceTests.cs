@@ -21,20 +21,20 @@ public class FileServiceTests
     }
 
     [Fact]
-    public async Task SaveFileAsync_RespectsRequestedLineEnding()
+    public async Task SaveFileAsync_PreservesExistingLineEndings()
     {
         var service = new FileService();
         var tempFile = Path.GetTempFileName();
 
         try
         {
-            const string content = "one\nTwo";
-            await service.SaveFileAsync(tempFile, content, FileEncodingType.UTF8, LineEndingStyle.LF);
+            const string content = "one\r\ntwo\nthree\r";
+            await service.SaveFileAsync(tempFile, content, FileEncodingType.UTF8, LineEndingStyle.CRLF);
 
             var (loadedContent, _, _, detectedEnding) = await service.LoadFileAsync(tempFile);
 
-            Assert.Equal("one\nTwo", loadedContent);
-            Assert.Equal(LineEndingStyle.LF, detectedEnding);
+            Assert.Equal(content, loadedContent);
+            Assert.Equal(LineEndingStyle.CRLF, detectedEnding);
         }
         finally
         {

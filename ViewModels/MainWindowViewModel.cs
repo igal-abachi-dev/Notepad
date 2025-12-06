@@ -30,7 +30,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SearchService _searchService;
     private readonly SettingsService _settingsService;
     private readonly PrintService _printService;
-    private bool? _statusBarBeforeWrap;
+    private FindReplaceDialog? _findReplaceDialog;
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -352,9 +352,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowFindDialog()
     {
-        // Open find dialog (modeless)
-        var dialog = new FindReplaceDialog(this, findMode: true);
-        dialog.Show(GetMainWindow());
+        ShowFindOrReplaceDialog(findMode: true);
     }
 
     /// <summary>
@@ -363,8 +361,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowReplaceDialog()
     {
-        var dialog = new FindReplaceDialog(this, findMode: false);
-        dialog.Show(GetMainWindow());
+        ShowFindOrReplaceDialog(findMode: false);
     }
 
     [RelayCommand]
@@ -413,7 +410,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
         {
-            StatusText = "Find what?";
+            ShowFindOrReplaceDialog(findMode: true);
             return;
         }
 
@@ -492,6 +489,28 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    private void ShowFindOrReplaceDialog(bool findMode)
+    {
+        if (_findReplaceDialog != null)
+        {
+            _findReplaceDialog.DataContext = new FindReplaceViewModel(this, findMode);
+            _findReplaceDialog.Title = findMode ? "Find" : "Replace";
+            if (!_findReplaceDialog.IsVisible)
+            {
+                _findReplaceDialog.Show(GetMainWindow());
+            }
+            else
+            {
+                _findReplaceDialog.Activate();
+            }
+            return;
+        }
+
+        _findReplaceDialog = new FindReplaceDialog(this, findMode);
+        _findReplaceDialog.Closed += (_, _) => _findReplaceDialog = null;
+        _findReplaceDialog.Show(GetMainWindow());
+    }
+
     // ==================== Format Commands ====================
 
     /// <summary>
@@ -500,22 +519,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleWordWrap()
     {
-        var enabling = !Settings.WordWrap;
-        Settings.WordWrap = enabling;
-
-        if (enabling)
-        {
-            _statusBarBeforeWrap = Settings.ShowStatusBar;
-            if (Settings.ShowStatusBar)
-            {
-                Settings.ShowStatusBar = false;
-            }
-        }
-        else if (_statusBarBeforeWrap.HasValue)
-        {
-            Settings.ShowStatusBar = _statusBarBeforeWrap.Value;
-        }
-
+        Settings.WordWrap = !Settings.WordWrap;
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(CanUseGoToLine));
         _settingsService.SaveEditorSettings(Settings);
@@ -560,10 +564,6 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleStatusBar()
     {
-        if (Settings.WordWrap)
-        {
-            return; // Notepad behavior: disabled when word wrap is on
-        }
         Settings.ShowStatusBar = !Settings.ShowStatusBar;
         OnPropertyChanged(nameof(Settings));
         _settingsService.SaveEditorSettings(Settings);
