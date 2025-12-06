@@ -25,4 +25,7 @@ public class EditorSettings
     public int WindowY { get; set; } = 100;
     public int WindowWidth { get; set; } = 800;
     public int WindowHeight { get; set; } = 600;
+
+    // Last-used encoding for Save/Save As (maps to g310)
+    public FileEncodingType LastEncoding { get; set; } = FileEncodingType.ANSI;
 }

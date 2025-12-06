@@ -151,7 +151,7 @@
 		</Grid>
 
         <!-- Main Editor -->
-        <avaloniaEdit:TextEditor Name="Editor" Background="White" Foreground="Black" MinHeight="300"
+        <avaloniaEdit:TextEditor Name="Editor" Background="White" Foreground="Black" MinHeight="300" MinWidth="300"
                                  Document="{Binding TextDocument, Mode=TwoWay}"
                                  FontFamily="{Binding Settings.FontFamily}"
                                  FontSize="{Binding EditorFontSize}"

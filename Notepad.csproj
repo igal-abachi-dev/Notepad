@@ -37,5 +37,8 @@
     <Compile Update="Views\FontDialog.axaml.cs">
       <DependentUpon>FontDialog.axaml</DependentUpon>
     </Compile>
+    <Compile Update="Views\EncodingDialog.axaml.cs">
+      <DependentUpon>EncodingDialog.axaml</DependentUpon>
+    </Compile>
   </ItemGroup>
 </Project>

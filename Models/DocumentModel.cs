@@ -12,14 +12,16 @@ public class DocumentModel
     public string FilePath { get; set; } = string.Empty;
     public bool IsUntitled { get; set; } = true;
     public bool IsModified { get; set; } = false;
-    public Encoding Encoding { get; set; } = Encoding.UTF8;
+    public Encoding Encoding { get; set; } = Encoding.Default;
+    public FileEncodingType EncodingType { get; set; } = FileEncodingType.ANSI;
+    public FileEncodingType SaveEncodingType { get; set; } = FileEncodingType.ANSI;
     public LineEndingStyle LineEnding { get; set; } = LineEndingStyle.CRLF;
 
     public string FileName => IsUntitled
         ? "Untitled"
         : Path.GetFileName(FilePath);
 
-    public string WindowTitle => $"{FileName}{(IsModified ? "*" : "")} - Notepad";
+    public string WindowTitle => $"{(IsModified ? "*" : "")}{FileName} - Notepad";
 }
 
 public enum LineEndingStyle

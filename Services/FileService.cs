@@ -2,6 +2,8 @@ using System.IO;
 using NotepadAvalonia.Models;
 using System.Text;
 using System.Threading.Tasks;
+using System;
+using System.Runtime.InteropServices;
 
 namespace NotepadAvalonia.Services;
 
@@ -11,10 +13,11 @@ namespace NotepadAvalonia.Services;
 /// </summary>
 public class FileService 
 {
-    public async Task<(string content, Encoding encoding, LineEndingStyle lineEnding)> LoadFileAsync(string path)
+    public async Task<(string content, Encoding encoding, FileEncodingType encodingType, LineEndingStyle lineEnding)> LoadFileAsync(string path)
     {
         var bytes = await File.ReadAllBytesAsync(path);
-        var encoding = DetectEncoding(bytes);
+        var encodingType = DetectEncodingType(bytes);
+        var encoding = GetEncoding(encodingType);
 
         // Skip BOM if present
         int bomLength = GetBomLength(encoding, bytes);
@@ -22,13 +25,15 @@ public class FileService
 
         var lineEnding = DetectLineEndings(content);
 
-        return (content, encoding, lineEnding);
+        return (content, encoding, encodingType, lineEnding);
     }
 
-    public async Task SaveFileAsync(string path, string content, Encoding encoding, LineEndingStyle lineEnding)
+    public async Task SaveFileAsync(string path, string content, FileEncodingType encodingType, LineEndingStyle lineEnding)
     {
         // Normalize line endings
         content = NormalizeLineEndings(content, lineEnding);
+
+        var encoding = GetEncoding(encodingType);
 
         // Get bytes with optional BOM
         byte[] contentBytes = encoding.GetBytes(content);
@@ -45,36 +50,36 @@ public class FileService
     /// <summary>
     /// Maps to function_140007f5c BOM detection logic
     /// </summary>
-    public Encoding DetectEncoding(byte[] bytes)
+    public FileEncodingType DetectEncodingType(byte[] bytes)
     {
-        if (bytes.Length < 2) return Encoding.Default;
+        if (bytes.Length < 2) return FileEncodingType.ANSI;
 
         // UTF-8 BOM: EF BB BF
         if (bytes.Length >= 3 &&
             bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
         {
-            return new UTF8Encoding(true);
+            return FileEncodingType.UTF8BOM;
         }
 
         // UTF-16 LE BOM: FF FE
         if (bytes[0] == 0xFF && bytes[1] == 0xFE)
         {
-            return Encoding.Unicode;
+            return FileEncodingType.UTF16LE;
         }
 
         // UTF-16 BE BOM: FE FF  
         if (bytes[0] == 0xFE && bytes[1] == 0xFF)
         {
-            return Encoding.BigEndianUnicode;
+            return FileEncodingType.UTF16BE;
         }
 
         // Heuristic detection (like IsTextUnicode)
-        if (LooksLikeUtf8(bytes))
-        {
-            return new UTF8Encoding(false);
-        }
+        var utf16Kind = LooksLikeUtf16(bytes);
+        if (utf16Kind.HasValue) return utf16Kind.Value;
 
-        return Encoding.Default; // ANSI
+        if (LooksLikeUtf8(bytes)) return FileEncodingType.UTF8;
+
+        return FileEncodingType.ANSI; // ANSI
     }
 
     public LineEndingStyle DetectLineEndings(string content)
@@ -107,6 +112,19 @@ public class FileService
         if (crlf >= lf && crlf >= cr) return LineEndingStyle.CRLF;
         if (lf >= cr) return LineEndingStyle.LF;
         return LineEndingStyle.CR;
+    }
+
+    public Encoding GetEncoding(FileEncodingType encodingType)
+    {
+        return encodingType switch
+        {
+            FileEncodingType.ANSI => Encoding.Default,
+            FileEncodingType.UTF16LE => Encoding.Unicode,              // with BOM
+            FileEncodingType.UTF16BE => Encoding.BigEndianUnicode,     // with BOM
+            FileEncodingType.UTF8BOM => new UTF8Encoding(true),
+            FileEncodingType.UTF8 => new UTF8Encoding(false),
+            _ => Encoding.Default
+        };
     }
 
     private int GetBomLength(Encoding encoding, byte[] bytes)
@@ -164,4 +182,42 @@ public class FileService
         }
         return true;
     }
+
+    private FileEncodingType? LooksLikeUtf16(byte[] bytes)
+    {
+        // Prefer Windows API when available for parity with core
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            int flags = 0;
+            // 0x0001 IS_TEXT_UNICODE_ASCII16 | 0x0002 REVERSE_ASCII16 | 0x0004 STATISTICS | 0x0008 REVERSE_STATISTICS
+            flags = 0x0001 | 0x0002 | 0x0004 | 0x0008;
+            bool isUnicode = IsTextUnicode(bytes, bytes.Length, ref flags);
+            if (isUnicode)
+            {
+                // Flags mirroring IS_TEXT_UNICODE_REVERSE_MASK vs UNICODE_MASK
+                if ((flags & 0x0002) == 0x0002) return FileEncodingType.UTF16BE;
+                return FileEncodingType.UTF16LE;
+            }
+        }
+
+        // Fallback heuristic: look for 0x00 bytes in expected positions
+        int evenZeros = 0, oddZeros = 0, count = Math.Min(bytes.Length, 4096);
+        for (int i = 0; i + 1 < count; i += 2)
+        {
+            if (bytes[i] == 0) evenZeros++;
+            if (bytes[i + 1] == 0) oddZeros++;
+        }
+
+        int pairs = count / 2;
+        if (pairs == 0) return null;
+
+        // If almost all even bytes are 0, likely BE; if almost all odd bytes are 0, likely LE
+        if (oddZeros > pairs * 0.6) return FileEncodingType.UTF16LE;
+        if (evenZeros > pairs * 0.6) return FileEncodingType.UTF16BE;
+
+        return null;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool IsTextUnicode(byte[] buf, int len, ref int lpi);
 }

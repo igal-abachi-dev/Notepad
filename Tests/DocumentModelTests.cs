@@ -14,7 +14,7 @@ public class DocumentModelTests
             IsModified = true
         };
 
-        Assert.Equal("Untitled* - Notepad", model.WindowTitle);
+        Assert.Equal("*Untitled - Notepad", model.WindowTitle);
     }
 
     [Fact]

@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -29,6 +30,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SearchService _searchService;
     private readonly SettingsService _settingsService;
     private readonly PrintService _printService;
+    private bool? _statusBarBeforeWrap;
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -76,6 +78,9 @@ public partial class MainWindowViewModel : ObservableObject
         _settings = _settingsService.LoadEditorSettings();
         _searchSettings = _settingsService.LoadSearchSettings();
         _pageSetupSettings = _settingsService.LoadPageSetupSettings();
+        Document.Encoding = _fileService.GetEncoding(_settings.LastEncoding);
+        Document.EncodingType = _settings.LastEncoding;
+        Document.SaveEncodingType = _settings.LastEncoding;
         foreach (var path in _settingsService.LoadRecentFiles())
         {
             RecentFiles.Add(path);
@@ -85,6 +90,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(EditorFontSize));
         OnPropertyChanged(nameof(EditorFontWeight));
         OnPropertyChanged(nameof(EditorFontStyle));
+        UpdateEncodingDisplay();
     }
 
     public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
@@ -123,7 +129,12 @@ public partial class MainWindowViewModel : ObservableObject
         if (!await CheckSaveChangesAsync()) return;
 
         TextDocument = new TextDocument();
-        Document = new DocumentModel();
+        Document = new DocumentModel
+        {
+            Encoding = _fileService.GetEncoding(_settings.LastEncoding),
+            EncodingType = _settings.LastEncoding,
+            SaveEncodingType = _settings.LastEncoding
+        };
         UpdateEncodingDisplay();
         UpdateStatus();
         UpdateCaretPosition(1, 1);
@@ -165,7 +176,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         try
         {
-            var (content, encoding, lineEnding) = await _fileService.LoadFileAsync(path);
+            var (content, encoding, encodingType, lineEnding) = await _fileService.LoadFileAsync(path);
 
             TextDocument = new TextDocument(content);
             Document = new DocumentModel
@@ -174,9 +185,13 @@ public partial class MainWindowViewModel : ObservableObject
                 IsUntitled = false,
                 IsModified = false,
                 Encoding = encoding,
+                EncodingType = encodingType,
+                SaveEncodingType = encodingType,
                 LineEnding = lineEnding
             };
 
+            _settings.LastEncoding = encodingType;
+            _settingsService.SaveEditorSettings(_settings);
             UpdateEncodingDisplay();
             UpdateStatus();
             AddRecentFile(path);
@@ -199,7 +214,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await SaveToFileAsync(Document.FilePath);
+        await SaveToFileAsync(Document.FilePath, Document.SaveEncodingType);
     }
 
     /// <summary>
@@ -226,27 +241,43 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var result = await dialog.ShowAsync(GetMainWindow());
-        if (!string.IsNullOrEmpty(result))
+        if (string.IsNullOrEmpty(result))
         {
-            await SaveToFileAsync(result);
+            return;
         }
+
+        var encodingDialog = new EncodingDialog(Document.SaveEncodingType);
+        var encodingSelection = await encodingDialog.ShowDialog<FileEncodingType?>(GetMainWindow());
+        if (!encodingSelection.HasValue)
+        {
+            return;
+        }
+
+        Document.SaveEncodingType = encodingSelection.Value;
+        await SaveToFileAsync(result, encodingSelection.Value);
     }
 
-    private async Task SaveToFileAsync(string path)
+    private async Task SaveToFileAsync(string path, FileEncodingType encodingType)
     {
         try
         {
             await _fileService.SaveFileAsync(
                 path,
                 TextDocument.Text,
-                Document.Encoding,
+                encodingType,
                 Document.LineEnding);
 
             Document.FilePath = path;
             Document.IsUntitled = false;
             Document.IsModified = false;
+            Document.EncodingType = encodingType;
+            Document.SaveEncodingType = encodingType;
+            Document.Encoding = _fileService.GetEncoding(encodingType);
+            _settings.LastEncoding = encodingType;
+            _settingsService.SaveEditorSettings(_settings);
             OnPropertyChanged(nameof(Document));
             AddRecentFile(path);
+            UpdateEncodingDisplay();
         }
         catch (Exception ex)
         {
@@ -307,7 +338,9 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void InsertDateTime()
     {
-        var dateTime = DateTime.Now.ToString("h:mm tt M/d/yyyy");
+        var now = DateTime.Now;
+        var culture = CultureInfo.CurrentCulture;
+        var dateTime = $"{now.ToString("d", culture)} {now.ToString("t", culture)}";
         TextEditor?.Document.Insert(TextEditor.CaretOffset, dateTime);
     }
 
@@ -467,16 +500,24 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleWordWrap()
     {
-        Settings.WordWrap = !Settings.WordWrap;
-        OnPropertyChanged(nameof(Settings));
-        OnPropertyChanged(nameof(CanUseGoToLine));
+        var enabling = !Settings.WordWrap;
+        Settings.WordWrap = enabling;
 
-        if (Settings.WordWrap && Settings.ShowStatusBar)
+        if (enabling)
         {
-            Settings.ShowStatusBar = false;
-            OnPropertyChanged(nameof(Settings));
+            _statusBarBeforeWrap = Settings.ShowStatusBar;
+            if (Settings.ShowStatusBar)
+            {
+                Settings.ShowStatusBar = false;
+            }
+        }
+        else if (_statusBarBeforeWrap.HasValue)
+        {
+            Settings.ShowStatusBar = _statusBarBeforeWrap.Value;
         }
 
+        OnPropertyChanged(nameof(Settings));
+        OnPropertyChanged(nameof(CanUseGoToLine));
         _settingsService.SaveEditorSettings(Settings);
     }
 
@@ -630,7 +671,15 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateEncodingDisplay()
     {
-        EncodingText = Document.Encoding.WebName.ToUpperInvariant();
+        EncodingText = Document.EncodingType switch
+        {
+            FileEncodingType.ANSI => "ANSI",
+            FileEncodingType.UTF16LE => "Unicode",
+            FileEncodingType.UTF16BE => "Unicode BE",
+            FileEncodingType.UTF8BOM => "UTF-8 BOM",
+            FileEncodingType.UTF8 => "UTF-8",
+            _ => Document.Encoding.WebName.ToUpperInvariant()
+        };
         LineEndingText = Document.LineEnding switch
         {
             LineEndingStyle.CR => "CR",
@@ -656,6 +705,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     public void SaveSessionSettings()
     {
+        Settings.LastEncoding = Document.SaveEncodingType;
         _settingsService.SaveEditorSettings(Settings);
         _settingsService.SaveSearchSettings(SearchSettings);
         _settingsService.SavePageSetupSettings(PageSetupSettings);

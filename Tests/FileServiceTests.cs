@@ -15,10 +15,9 @@ public class FileServiceTests
         var service = new FileService();
         var bytes = new byte[] { 0xEF, 0xBB, 0xBF, 0x41 };
 
-        var encoding = service.DetectEncoding(bytes);
+        var encoding = service.DetectEncodingType(bytes);
 
-        Assert.IsType<UTF8Encoding>(encoding);
-        Assert.True(((UTF8Encoding)encoding).GetPreamble().Length > 0);
+        Assert.Equal(FileEncodingType.UTF8BOM, encoding);
     }
 
     [Fact]
@@ -30,9 +29,9 @@ public class FileServiceTests
         try
         {
             const string content = "one\nTwo";
-            await service.SaveFileAsync(tempFile, content, new UTF8Encoding(false), LineEndingStyle.LF);
+            await service.SaveFileAsync(tempFile, content, FileEncodingType.UTF8, LineEndingStyle.LF);
 
-            var (loadedContent, _, detectedEnding) = await service.LoadFileAsync(tempFile);
+            var (loadedContent, _, _, detectedEnding) = await service.LoadFileAsync(tempFile);
 
             Assert.Equal("one\nTwo", loadedContent);
             Assert.Equal(LineEndingStyle.LF, detectedEnding);

@@ -1,0 +1,27 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="NotepadAvalonia.Views.EncodingDialog"
+        Width="320"
+        Height="200"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="Encoding"
+        x:CompileBindings="False">
+	<StackPanel Margin="12" Spacing="12">
+		<TextBlock Text="Select encoding for saving:" />
+		<!--<ComboBox x:Name="EncodingCombo"
+				  Items="{Binding Options}"
+				  SelectedItem="{Binding SelectedOption}"
+				  MinWidth="200">
+			<ComboBox.ItemTemplate>
+				<DataTemplate>
+					<TextBlock Text="{Binding Name}" />
+				</DataTemplate>
+			</ComboBox.ItemTemplate>
+		</ComboBox>-->
+		<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+			<Button Content="OK" MinWidth="80" Click="OnOk" />
+			<Button Content="Cancel" MinWidth="80" Click="OnCancel" />
+		</StackPanel>
+	</StackPanel>
+</Window>
