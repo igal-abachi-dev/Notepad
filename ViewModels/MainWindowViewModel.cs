@@ -80,6 +80,10 @@ public partial class MainWindowViewModel : ObservableObject
         _searchSettings = _settingsService.LoadSearchSettings();
         _pageSetupSettings = _settingsService.LoadPageSetupSettings();
         _statusBarBeforeWrap = _settings.ShowStatusBar;
+        if (_settings.WordWrap)
+        {
+            _settings.ShowStatusBar = false;
+        }
         Document.Encoding = _fileService.GetEncoding(_settings.LastEncoding);
         Document.EncodingType = _settings.LastEncoding;
         Document.SaveEncodingType = _settings.LastEncoding;
@@ -92,6 +96,8 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(EditorFontSize));
         OnPropertyChanged(nameof(EditorFontWeight));
         OnPropertyChanged(nameof(EditorFontStyle));
+        OnPropertyChanged(nameof(CanUseGoToLine));
+        OnPropertyChanged(nameof(CanToggleStatusBar));
         UpdateEncodingDisplay();
     }
 
@@ -410,14 +416,28 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task FindNext()
     {
+        await FindCoreAsync(reverse: false);
+    }
+
+    /// <summary>
+    /// Maps to: Shift+F3 (reverse find)
+    /// </summary>
+    [RelayCommand]
+    private async Task FindPrevious()
+    {
+        await FindCoreAsync(reverse: true);
+    }
+
+    private async Task FindCoreAsync(bool reverse)
+    {
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
         {
-            ShowFindOrReplaceDialog(findMode: true);
             return;
         }
 
-        var result = SearchSettings.SearchUp
+        var searchUp = reverse ? !SearchSettings.SearchUp : SearchSettings.SearchUp;
+        var (result, wrapped) = searchUp
             ? _searchService.FindPrevious(TextEditor, SearchSettings)
             : _searchService.FindNext(TextEditor, SearchSettings);
 
@@ -425,15 +445,18 @@ public partial class MainWindowViewModel : ObservableObject
         {
             TextEditor.Select(result.StartOffset, result.Length);
             TextEditor.ScrollToLine(TextEditor.Document.GetLineByOffset(result.StartOffset).LineNumber);
+            return;
         }
-        else
-        {
-            await MessageBoxManager.GetMessageBoxStandard(
-                "Notepad",
-                $"Cannot find \"{SearchSettings.SearchString}\"",
-                ButtonEnum.Ok).ShowAsync();
-            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
-        }
+
+        var message = wrapped
+            ? "Notepad has finished searching the document."
+            : $"Cannot find \"{SearchSettings.SearchString}\"";
+
+        await MessageBoxManager.GetMessageBoxStandard(
+            "Notepad",
+            message,
+            ButtonEnum.Ok).ShowAsync();
+        StatusText = message;
     }
 
     [RelayCommand]
@@ -442,20 +465,27 @@ public partial class MainWindowViewModel : ObservableObject
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
         {
-            StatusText = "Find what?";
             return;
         }
 
-        var replaced = _searchService.ReplaceNext(TextEditor, SearchSettings);
-        if (replaced == 0)
+        var (result, wrapped) = SearchSettings.SearchUp
+            ? _searchService.FindPrevious(TextEditor, SearchSettings)
+            : _searchService.FindNext(TextEditor, SearchSettings);
+
+        if (result == null)
         {
+            var message = wrapped
+                ? "Notepad has finished searching the document."
+                : $"Cannot find \"{SearchSettings.SearchString}\"";
             await MessageBoxManager.GetMessageBoxStandard(
                 "Notepad",
-                $"Cannot find \"{SearchSettings.SearchString}\"",
+                message,
                 ButtonEnum.Ok).ShowAsync();
-            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
+            StatusText = message;
             return;
         }
+
+        TextEditor.Document.Replace(result.StartOffset, result.Length, SearchSettings.ReplaceString);
 
         Document.IsModified = true;
         OnPropertyChanged(nameof(Document));
@@ -467,28 +497,21 @@ public partial class MainWindowViewModel : ObservableObject
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
         {
-            StatusText = "Find what?";
             return;
         }
 
         var count = _searchService.ReplaceAll(TextEditor, SearchSettings);
-        if (count == 0)
-        {
-            await MessageBoxManager.GetMessageBoxStandard(
-                "Notepad",
-                $"Cannot find \"{SearchSettings.SearchString}\"",
-                ButtonEnum.Ok).ShowAsync();
-            StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
-            return;
-        }
-
-        StatusText = $"Replaced {count} occurrence{(count == 1 ? "" : "s")}";
+        var message = $"Replaced {count} occurrence{(count == 1 ? "" : "s")}.";
+        StatusText = message;
         await MessageBoxManager.GetMessageBoxStandard(
             "Notepad",
-            $"Replaced {count} occurrence{(count == 1 ? "" : "s")}.",
+            message,
             ButtonEnum.Ok).ShowAsync();
-        Document.IsModified = true;
-        OnPropertyChanged(nameof(Document));
+        if (count > 0)
+        {
+            Document.IsModified = true;
+            OnPropertyChanged(nameof(Document));
+        }
     }
 
     /// <summary>
@@ -719,10 +742,10 @@ public partial class MainWindowViewModel : ObservableObject
     {
         EncodingText = Document.EncodingType switch
         {
-            FileEncodingType.ANSI => "ANSI",
+            FileEncodingType.ANSI => "Windows (ANSI)",
             FileEncodingType.UTF16LE => "Unicode",
-            FileEncodingType.UTF16BE => "Unicode BE",
-            FileEncodingType.UTF8BOM => "UTF-8 BOM",
+            FileEncodingType.UTF16BE => "Unicode big endian",
+            FileEncodingType.UTF8BOM => "UTF-8",
             FileEncodingType.UTF8 => "UTF-8",
             _ => Document.Encoding.WebName.ToUpperInvariant()
         };

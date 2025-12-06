@@ -22,10 +22,11 @@
 		<KeyBinding Gesture="Delete" Command="{Binding DeleteCommand}" />
 		<KeyBinding Gesture="Ctrl+A" Command="{Binding SelectAllCommand}" />
 		<KeyBinding Gesture="F5" Command="{Binding InsertDateTimeCommand}" />
-		<KeyBinding Gesture="Ctrl+F" Command="{Binding ShowFindDialogCommand}" />
-		<KeyBinding Gesture="Ctrl+H" Command="{Binding ShowReplaceDialogCommand}" />
-		<KeyBinding Gesture="F3" Command="{Binding FindNextCommand}" />
-		<KeyBinding Gesture="Ctrl+G" Command="{Binding GoToLineCommand}" />
+        <KeyBinding Gesture="Ctrl+F" Command="{Binding ShowFindDialogCommand}" />
+        <KeyBinding Gesture="Ctrl+H" Command="{Binding ShowReplaceDialogCommand}" />
+        <KeyBinding Gesture="F3" Command="{Binding FindNextCommand}" />
+        <KeyBinding Gesture="Shift+F3" Command="{Binding FindPreviousCommand}" />
+        <KeyBinding Gesture="Ctrl+G" Command="{Binding GoToLineCommand}" />
 		<!--<KeyBinding Gesture="Ctrl+Plus" Command="{Binding ZoomInCommand}" />
 		<KeyBinding Gesture="Ctrl+Minus" Command="{Binding ZoomOutCommand}" />-->
 		<KeyBinding Gesture="Ctrl+0" Command="{Binding RestoreZoomCommand}" />
@@ -97,26 +98,27 @@
 			</MenuItem>
 
 			<MenuItem Header="_View">
-				<MenuItem Header="_Zoom">
-					<!--<MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}"
+                <MenuItem Header="_Zoom">
+                    <!--<MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}"
                               InputGesture="Ctrl+Plus" />
-					<MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}"
+                    <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}"
                               InputGesture="Ctrl+Minus" />-->
-					<MenuItem Header="_Restore Default Zoom"
+                    <MenuItem Header="_Restore Default Zoom"
                               Command="{Binding RestoreZoomCommand}"
                               InputGesture="Ctrl+0" />
-				</MenuItem>
-				<MenuItem Header="_Status Bar"
+                </MenuItem>
+                <MenuItem Header="_Status Bar"
                           Command="{Binding ToggleStatusBarCommand}"
-                          IsChecked="{Binding Settings.ShowStatusBar}" />
-			</MenuItem>
+                          IsChecked="{Binding Settings.ShowStatusBar}"
+                          IsEnabled="{Binding CanToggleStatusBar}" />
+            </MenuItem>
 
-			<MenuItem Header="_Help">
-				<MenuItem Header="View _Help" Command="{Binding ViewHelpCommand}" />
-				<!--<MenuItem Header="Send _Feedback" Command="{Binding SendFeedbackCommand}" />-->
-				<Separator />
-				<MenuItem Header="_About Notepad" Command="{Binding ShowAboutCommand}" />
-			</MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="View _Help" Command="{Binding ViewHelpCommand}" InputGesture="F1" />
+                <!--<MenuItem Header="Send _Feedback" Command="{Binding SendFeedbackCommand}" />-->
+                <Separator />
+                <MenuItem Header="_About Notepad" Command="{Binding ShowAboutCommand}" />
+            </MenuItem>
 		</Menu>
 
 		<!-- Status Bar -->

@@ -12,27 +12,29 @@ namespace NotepadAvalonia.Services;
 /// </summary>
 public class SearchService
 {
-    public SearchResult? FindNext(TextEditor editor, SearchSettings settings)
+    public (SearchResult? result, bool wrapped) FindNext(TextEditor editor, SearchSettings settings)
     {
         return Find(editor, settings, forward: true);
     }
 
-    public SearchResult? FindPrevious(TextEditor editor, SearchSettings settings)
+    public (SearchResult? result, bool wrapped) FindPrevious(TextEditor editor, SearchSettings settings)
     {
         return Find(editor, settings, forward: false);
     }
 
-    private SearchResult? Find(TextEditor editor, SearchSettings settings, bool forward)
+    private (SearchResult? result, bool wrapped) Find(TextEditor editor, SearchSettings settings, bool forward)
     {
         var document = editor.Document;
         var text = document.Text;
         var searchText = settings.SearchString;
 
-        if (string.IsNullOrEmpty(searchText)) return null;
+        if (string.IsNullOrEmpty(searchText)) return (null, false);
 
         int startPos = forward
             ? editor.SelectionStart + editor.SelectionLength
-            : editor.SelectionStart;
+            : Math.Max(0, editor.SelectionStart - 1);
+
+        bool wrapped = false;
 
         if (settings.UseRegex)
         {
@@ -44,11 +46,12 @@ public class SearchService
             if (forward)
             {
                 var match = regex.Match(text, startPos);
-                if (settings.WrapAround && !match.Success && startPos > 0)
+                if (settings.WrapAround && !match.Success && text.Length > 0)
                 {
+                    wrapped = true;
                     match = regex.Match(text, 0);
                 }
-                if (match.Success) return new SearchResult(match.Index, match.Length);
+                if (match.Success) return (new SearchResult(match.Index, match.Length), wrapped);
             }
             else
             {
@@ -56,15 +59,16 @@ public class SearchService
                 if (matches.Count > 0)
                 {
                     var last = matches[^1];
-                    return new SearchResult(last.Index, last.Length);
+                    return (new SearchResult(last.Index, last.Length), wrapped);
                 }
-                if (settings.WrapAround && startPos < text.Length)
+                if (settings.WrapAround && text.Length > 0)
                 {
+                    wrapped = true;
                     matches = regex.Matches(text);
                     if (matches.Count > 0)
                     {
                         var last = matches[^1];
-                        return new SearchResult(last.Index, last.Length);
+                        return (new SearchResult(last.Index, last.Length), wrapped);
                     }
                 }
             }
@@ -79,26 +83,32 @@ public class SearchService
             if (forward)
             {
                 foundPos = FindForward(text, searchText, startPos, comparison, settings.WholeWord);
-                if (foundPos == -1 && settings.WrapAround && startPos > 0)
+                if (foundPos == -1 && settings.WrapAround && text.Length > 0)
+                {
+                    wrapped = true;
                     foundPos = FindForward(text, searchText, 0, comparison, settings.WholeWord);
+                }
             }
             else
             {
                 foundPos = FindBackward(text, searchText, startPos, comparison, settings.WholeWord);
-                if (foundPos == -1 && settings.WrapAround && startPos < text.Length)
+                if (foundPos == -1 && settings.WrapAround && text.Length > 0)
+                {
+                    wrapped = true;
                     foundPos = FindBackward(text, searchText, text.Length - 1, comparison, settings.WholeWord);
+                }
             }
 
             if (foundPos >= 0)
-                return new SearchResult(foundPos, searchText.Length);
+                return (new SearchResult(foundPos, searchText.Length), wrapped);
         }
 
-        return null;
+        return (null, wrapped);
     }
 
     public int ReplaceNext(TextEditor editor, SearchSettings settings)
     {
-        var result = FindNext(editor, settings);
+        var (result, _) = FindNext(editor, settings);
         if (result != null)
         {
             editor.Document.Replace(result.StartOffset, result.Length, settings.ReplaceString);
