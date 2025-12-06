@@ -31,6 +31,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SettingsService _settingsService;
     private readonly PrintService _printService;
     private FindReplaceDialog? _findReplaceDialog;
+    private bool _statusBarBeforeWrap = true;
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -78,6 +79,7 @@ public partial class MainWindowViewModel : ObservableObject
         _settings = _settingsService.LoadEditorSettings();
         _searchSettings = _settingsService.LoadSearchSettings();
         _pageSetupSettings = _settingsService.LoadPageSetupSettings();
+        _statusBarBeforeWrap = _settings.ShowStatusBar;
         Document.Encoding = _fileService.GetEncoding(_settings.LastEncoding);
         Document.EncodingType = _settings.LastEncoding;
         Document.SaveEncodingType = _settings.LastEncoding;
@@ -96,6 +98,7 @@ public partial class MainWindowViewModel : ObservableObject
     public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
     public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
     public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
+    public bool CanToggleStatusBar => !Settings.WordWrap;
 
     private void OnTextChanged(object? sender, EventArgs e)
     {
@@ -405,7 +408,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// Maps to: Command ID 28 (F3)
     /// </summary>
     [RelayCommand]
-    private void FindNext()
+    private async Task FindNext()
     {
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
@@ -425,12 +428,16 @@ public partial class MainWindowViewModel : ObservableObject
         }
         else
         {
+            await MessageBoxManager.GetMessageBoxStandard(
+                "Notepad",
+                $"Cannot find \"{SearchSettings.SearchString}\"",
+                ButtonEnum.Ok).ShowAsync();
             StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
         }
     }
 
     [RelayCommand]
-    private void ReplaceNext()
+    private async Task ReplaceNext()
     {
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
@@ -442,6 +449,10 @@ public partial class MainWindowViewModel : ObservableObject
         var replaced = _searchService.ReplaceNext(TextEditor, SearchSettings);
         if (replaced == 0)
         {
+            await MessageBoxManager.GetMessageBoxStandard(
+                "Notepad",
+                $"Cannot find \"{SearchSettings.SearchString}\"",
+                ButtonEnum.Ok).ShowAsync();
             StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
             return;
         }
@@ -451,7 +462,7 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ReplaceAll()
+    private async Task ReplaceAll()
     {
         if (TextEditor == null) return;
         if (string.IsNullOrEmpty(SearchSettings.SearchString))
@@ -463,11 +474,19 @@ public partial class MainWindowViewModel : ObservableObject
         var count = _searchService.ReplaceAll(TextEditor, SearchSettings);
         if (count == 0)
         {
+            await MessageBoxManager.GetMessageBoxStandard(
+                "Notepad",
+                $"Cannot find \"{SearchSettings.SearchString}\"",
+                ButtonEnum.Ok).ShowAsync();
             StatusText = $"Cannot find \"{SearchSettings.SearchString}\"";
             return;
         }
 
         StatusText = $"Replaced {count} occurrence{(count == 1 ? "" : "s")}";
+        await MessageBoxManager.GetMessageBoxStandard(
+            "Notepad",
+            $"Replaced {count} occurrence{(count == 1 ? "" : "s")}.",
+            ButtonEnum.Ok).ShowAsync();
         Document.IsModified = true;
         OnPropertyChanged(nameof(Document));
     }
@@ -478,6 +497,15 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task GoToLineAsync()
     {
+        if (Settings.WordWrap)
+        {
+            await MessageBoxManager.GetMessageBoxStandard(
+                "Notepad",
+                "Go To is unavailable when Word Wrap is on.",
+                ButtonEnum.Ok).ShowAsync();
+            return;
+        }
+
         var dialog = new GoToLineDialog(TextDocument.LineCount);
 
         var result = await dialog.ShowDialog<int?>(GetMainWindow());
@@ -520,9 +548,22 @@ public partial class MainWindowViewModel : ObservableObject
     private void ToggleWordWrap()
     {
         Settings.WordWrap = !Settings.WordWrap;
+
+        if (Settings.WordWrap)
+        {
+            _statusBarBeforeWrap = Settings.ShowStatusBar;
+            Settings.ShowStatusBar = false;
+        }
+        else
+        {
+            Settings.ShowStatusBar = _statusBarBeforeWrap;
+        }
+
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(CanUseGoToLine));
+        OnPropertyChanged(nameof(CanToggleStatusBar));
         _settingsService.SaveEditorSettings(Settings);
+        UpdateStatus();
     }
 
     /// <summary>
@@ -564,6 +605,11 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleStatusBar()
     {
+        if (Settings.WordWrap)
+        {
+            return;
+        }
+
         Settings.ShowStatusBar = !Settings.ShowStatusBar;
         OnPropertyChanged(nameof(Settings));
         _settingsService.SaveEditorSettings(Settings);
@@ -666,7 +712,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         CaretLine = line;
         CaretColumn = column;
-        StatusText = $"Ln {line}, Col {column}";
+        UpdateStatus();
     }
 
     private void UpdateEncodingDisplay()
@@ -690,7 +736,8 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateStatus()
     {
-        StatusText = $"Ln {CaretLine}, Col {CaretColumn}";
+        var lines = TextDocument?.LineCount ?? 1;
+        StatusText = $"Ln {CaretLine}, Col {CaretColumn}    Lines: {lines}";
     }
 
     public void SaveWindowPlacement(PixelPoint position, Size size)

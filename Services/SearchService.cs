@@ -34,8 +34,6 @@ public class SearchService
             ? editor.SelectionStart + editor.SelectionLength
             : editor.SelectionStart;
 
-        int foundPos;
-
         if (settings.UseRegex)
         {
             var options = settings.MatchCase
@@ -46,20 +44,21 @@ public class SearchService
             if (forward)
             {
                 var match = regex.Match(text, startPos);
-                if (!match.Success && settings.WrapAround)
+                if (settings.WrapAround && !match.Success && startPos > 0)
+                {
                     match = regex.Match(text, 0);
-                if (match.Success)
-                    return new SearchResult(match.Index, match.Length);
+                }
+                if (match.Success) return new SearchResult(match.Index, match.Length);
             }
             else
             {
-                var matches = regex.Matches(text[..startPos]);
+                var matches = regex.Matches(text[..Math.Min(startPos, text.Length)]);
                 if (matches.Count > 0)
                 {
                     var last = matches[^1];
                     return new SearchResult(last.Index, last.Length);
                 }
-                if (settings.WrapAround)
+                if (settings.WrapAround && startPos < text.Length)
                 {
                     matches = regex.Matches(text);
                     if (matches.Count > 0)
@@ -75,17 +74,18 @@ public class SearchService
             var comparison = settings.MatchCase
                 ? StringComparison.Ordinal
                 : StringComparison.OrdinalIgnoreCase;
+            int foundPos;
 
             if (forward)
             {
                 foundPos = FindForward(text, searchText, startPos, comparison, settings.WholeWord);
-                if (foundPos == -1 && settings.WrapAround)
+                if (foundPos == -1 && settings.WrapAround && startPos > 0)
                     foundPos = FindForward(text, searchText, 0, comparison, settings.WholeWord);
             }
             else
             {
                 foundPos = FindBackward(text, searchText, startPos, comparison, settings.WholeWord);
-                if (foundPos == -1 && settings.WrapAround)
+                if (foundPos == -1 && settings.WrapAround && startPos < text.Length)
                     foundPos = FindBackward(text, searchText, text.Length - 1, comparison, settings.WholeWord);
             }
 
