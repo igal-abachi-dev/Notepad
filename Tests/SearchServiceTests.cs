@@ -30,8 +30,8 @@ public class SearchServiceTests
         var result = service.FindNext(editor, settings);
 
         Assert.NotNull(result);
-        Assert.Equal(0, result!.StartOffset);
-        Assert.Equal(3, result.Length);
+        Assert.Equal(0, result!.result.StartOffset);
+        Assert.Equal(3, result.result.Length);
     }
 
     [Fact]
