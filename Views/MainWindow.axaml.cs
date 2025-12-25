@@ -5,6 +5,7 @@ using AvaloniaEdit;
 using Microsoft.VisualBasic;
 using System;
 using System.Linq;
+using Notepad.NeoEdit;
 using NotepadAvalonia.ViewModels;
 
 namespace NotepadAvalonia.Views;
@@ -12,18 +13,18 @@ namespace NotepadAvalonia.Views;
 public partial class MainWindow : Window
 {
     public MainWindowViewModel ViewModel => (MainWindowViewModel)DataContext!;
-    private TextEditor? _editor;
+    private NeoEditor? _editor;
     public MainWindow()
     {
         InitializeComponent();
 
-        _editor = this.FindControl<TextEditor>("Editor");
+        _editor = this.FindControl<NeoEditor>("Editor");
         DataContextChanged += OnDataContextChanged;
 
         // Wire up editor events
         if (_editor != null)
         {
-            _editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
+            _editor.CaretMoved += OnCaretMoved;
 
             // Give ViewModel access to editor for commands
             TryAttachEditorToViewModel();
@@ -46,7 +47,7 @@ public partial class MainWindow : Window
 
         if (DataContext is MainWindowViewModel vm)
         {
-            vm.TextEditor = _editor;
+            vm.InitializeEditor(_editor);
         }
     }
 
@@ -57,19 +58,9 @@ public partial class MainWindow : Window
             Position = new PixelPoint(vm.Settings.WindowX, vm.Settings.WindowY);
         }
     }
-
-    private void OnCaretPositionChanged(object? sender, EventArgs e)
+    private void OnCaretMoved(object? sender, (int Line, int Column) e)
     {
-        if (DataContext is MainWindowViewModel vm)
-        {
-            var editor = this.FindControl<TextEditor>("Editor");
-            if (editor != null)
-            {
-                var line = editor.TextArea.Caret.Line;
-                var column = editor.TextArea.Caret.Column;
-                vm.UpdateCaretPosition(line, column);
-            }
-        }
+        ViewModel?.UpdateCaretPosition(e.Line, e.Column);
     }
 
     private async void OnDrop(object? sender, DragEventArgs e)

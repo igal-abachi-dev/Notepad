@@ -24,22 +24,22 @@ public class TreeNode
         Color = color;
         SizeLeft = 0;
         LFLeft = 0;
-        Parent = PieceTreeBase.Sentinel;
-        Left = PieceTreeBase.Sentinel;
-        Right = PieceTreeBase.Sentinel;
+        Parent = PieceTreeEngine.Sentinel;
+        Left = PieceTreeEngine.Sentinel;
+        Right = PieceTreeEngine.Sentinel;
     }
 
     public TreeNode Next()
     {
-        if (Right != PieceTreeBase.Sentinel)
+        if (Right != PieceTreeEngine.Sentinel)
         {
             TreeNode node = Right;
-            while (node.Left != PieceTreeBase.Sentinel) node = node.Left;
+            while (node.Left != PieceTreeEngine.Sentinel) node = node.Left;
             return node;
         }
         TreeNode p = Parent;
         TreeNode n = this;
-        while (p != PieceTreeBase.Sentinel && n == p.Right)
+        while (p != PieceTreeEngine.Sentinel && n == p.Right)
         {
             n = p;
             p = p.Parent;

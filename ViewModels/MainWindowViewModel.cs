@@ -1,23 +1,24 @@
-using AvaloniaEdit.Document;
-using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
-using NotepadAvalonia.Models;
-using NotepadAvalonia.Services;
-using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
-using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media;
-using NotepadAvalonia.Views;
+using AvaloniaEdit.Document;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using MsBox.Avalonia;
 using MsBox.Avalonia.Enums;
+using Notepad.NeoEdit;
+using NotepadAvalonia.Models;
+using NotepadAvalonia.Services;
+using NotepadAvalonia.Views;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace NotepadAvalonia.ViewModels;
 
@@ -42,8 +43,11 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private SearchSettings _searchSettings = new();
 
+    //[ObservableProperty]
+    //private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
+
     [ObservableProperty]
-    private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
+    private string _fileContent = "";
 
     [ObservableProperty]
     private PageSetupSettings _pageSetupSettings = new();
@@ -64,6 +68,9 @@ public partial class MainWindowViewModel : ObservableObject
     private string _lineEndingText = "CRLF";
 
     public ObservableCollection<string> RecentFiles { get; } = new();
+
+    // Reference to your custom control
+    public NeoEditor? EditorControl { get; set; }
 
     public MainWindowViewModel(
         FileService fileService,
@@ -92,7 +99,6 @@ public partial class MainWindowViewModel : ObservableObject
             RecentFiles.Add(path);
         }
 
-        TextDocument.TextChanged += OnTextChanged;
         OnPropertyChanged(nameof(EditorFontSize));
         OnPropertyChanged(nameof(EditorFontWeight));
         OnPropertyChanged(nameof(EditorFontStyle));
@@ -100,7 +106,23 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CanToggleStatusBar));
         UpdateEncodingDisplay();
     }
+    public void InitializeEditor(NeoEditor editor)
+    {
+        EditorControl = editor;
 
+        // Subscribe to NeoEditor events
+        EditorControl.TextChanged += OnEditorTextChanged;
+        EditorControl.CaretMoved += (s, pos) => UpdateCaretPosition(pos.Line, pos.Column);
+    }
+    private void OnEditorTextChanged(object? sender, EventArgs e)
+    {
+        if (!Document.IsModified)
+        {
+            Document.IsModified = true;
+            OnPropertyChanged(nameof(Document));
+        }
+        UpdateStatus();
+    }
     public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
     public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
     public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
@@ -117,15 +139,15 @@ public partial class MainWindowViewModel : ObservableObject
         UpdateStatus();
     }
 
-    partial void OnTextDocumentChanging(TextDocument value)
-    {
-        TextDocument.TextChanged -= OnTextChanged;
-    }
+    //partial void OnTextDocumentChanging(TextDocument value)
+    //{
+    //    TextDocument.TextChanged -= OnTextChanged;
+    //}
 
-    partial void OnTextDocumentChanged(TextDocument value)
-    {
-        TextDocument.TextChanged += OnTextChanged;
-    }
+    //partial void OnTextDocumentChanged(TextDocument value)
+    //{
+    //    TextDocument.TextChanged += OnTextChanged;
+    //}
 
     // ==================== File Commands ====================
 
@@ -137,7 +159,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (!await CheckSaveChangesAsync()) return;
 
-        TextDocument = new TextDocument();
+        FileContent = ""; // Clears the editor via OneWay binding
         Document = new DocumentModel
         {
             Encoding = _fileService.GetEncoding(_settings.LastEncoding),
@@ -187,7 +209,7 @@ public partial class MainWindowViewModel : ObservableObject
         {
             var (content, encoding, encodingType, lineEnding) = await _fileService.LoadFileAsync(path);
 
-            TextDocument = new TextDocument(content);
+            FileContent = content; // NeoEditor will pick this up via OneWay binding
             Document = new DocumentModel
             {
                 FilePath = path,
@@ -210,6 +232,7 @@ public partial class MainWindowViewModel : ObservableObject
             await ShowErrorAsync($"Cannot open file: {ex.Message}");
         }
     }
+
 
     /// <summary>
     /// Maps to: Command ID 3, function_14000b874
@@ -270,9 +293,10 @@ public partial class MainWindowViewModel : ObservableObject
     {
         try
         {
+            string currentContent = EditorControl.GetText();
             await _fileService.SaveFileAsync(
                 path,
-                TextDocument.Text,
+                currentContent,
                 encodingType,
                 Document.LineEnding);
 
@@ -300,28 +324,28 @@ public partial class MainWindowViewModel : ObservableObject
     /// Maps to: Command ID 768 (EM_UNDO)
     /// </summary>
     [RelayCommand]
-    private void Undo() => TextEditor?.Undo();
+    private void Undo() => EditorControl?.Undo();
 
     [RelayCommand]
-    private void Redo() => TextEditor?.Redo();
+    private void Redo() => EditorControl?.Redo();
 
     /// <summary>
     /// Maps to: Command ID 769 (WM_CUT)
     /// </summary>
     [RelayCommand]
-    private void Cut() => TextEditor?.Cut();
+    private void Cut() => EditorControl?.Cut();
 
     /// <summary>
     /// Maps to: Command ID 770 (WM_COPY)
     /// </summary>
     [RelayCommand]
-    private void Copy() => TextEditor?.Copy();
+    private void Copy() => EditorControl?.Copy();
 
     /// <summary>
     /// Maps to: Command ID 771 (WM_PASTE)
     /// </summary>
     [RelayCommand]
-    private void Paste() => TextEditor?.Paste();
+    private void Paste() => EditorControl?.Paste();
 
     /// <summary>
     /// Maps to: Command ID 20
@@ -329,10 +353,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void Delete()
     {
-        if (TextEditor?.SelectionLength > 0)
-        {
-            TextEditor.SelectedText = "";
-        }
+        EditorControl?.DeleteSelection();
     }
 
     /// <summary>
@@ -350,7 +371,8 @@ public partial class MainWindowViewModel : ObservableObject
         var now = DateTime.Now;
         var culture = CultureInfo.CurrentCulture;
         var dateTime = $"{now.ToString("d", culture)} {now.ToString("t", culture)}";
-        TextEditor?.Document.Insert(TextEditor.CaretOffset, dateTime);
+
+        EditorControl?.InsertAtCaret(dateTime); 
     }
 
     // ==================== Find/Replace ====================

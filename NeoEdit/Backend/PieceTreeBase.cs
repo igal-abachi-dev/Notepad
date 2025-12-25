@@ -25,7 +25,7 @@ namespace Notepad.NeoEdit.Backend
         private int _cachedLength;
         private int _cachedLineCount;
 
-        public PieceTreeBase(string initialContent)
+        public PieceTreeEngine(string initialContent="")
         {
             Root = Sentinel;
             _buffers = new List<StringBuffer> { new StringBuffer("") }; // Buffer 0: Add Buffer

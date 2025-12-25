@@ -10,13 +10,60 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Notepad.NeoEdit.Backend;
+using Notepad.NeoEdit.Backend; // Ensure this matches your backend namespace
 
 namespace Notepad.NeoEdit
 {
     public sealed class NeoEditor : Control
     {
-        private readonly PieceTreeEngine _doc;
+        // 1. Define Styled Properties (This allows XAML binding)
+        public static readonly StyledProperty<string> TextProperty =
+            AvaloniaProperty.Register<NeoEditor, string>(nameof(Text), "");
+
+        public static readonly StyledProperty<FontFamily> FontFamilyProperty =
+            AvaloniaProperty.Register<NeoEditor, FontFamily>(nameof(FontFamily), new FontFamily("Consolas"));
+
+        public static readonly StyledProperty<double> FontSizeProperty =
+            AvaloniaProperty.Register<NeoEditor, double>(nameof(FontSize), 14.0);
+
+        public static readonly StyledProperty<IBrush> ForegroundProperty =
+            AvaloniaProperty.Register<NeoEditor, IBrush>(nameof(Foreground), Brushes.Black);
+
+        // 2. Public Properties wrappers
+        public string Text
+        {
+            get => GetValue(TextProperty);
+            set
+            {
+                SetValue(TextProperty, value);
+                // When Text is set from ViewModel, reload the doc
+                _doc = new PieceTreeEngine(value ?? "");
+                _caretOffset = 0;
+                _anchorOffset = 0;
+                _layoutCache.Clear();
+                InvalidateVisual();
+            }
+        }
+
+        public FontFamily FontFamily
+        {
+            get => GetValue(FontFamilyProperty);
+            set => SetValue(FontFamilyProperty, value);
+        }
+
+        public double FontSize
+        {
+            get => GetValue(FontSizeProperty);
+            set => SetValue(FontSizeProperty, value);
+        }
+
+        public IBrush Foreground
+        {
+            get => GetValue(ForegroundProperty);
+            set => SetValue(ForegroundProperty, value);
+        }
+
+        private PieceTreeEngine _doc;
         private readonly Typeface _typeface = new("Consolas");
         private readonly double _fontSize = 14;
         private readonly double _lineHeight = 22;
@@ -44,9 +91,11 @@ namespace Notepad.NeoEdit
 
         private record EditOp(bool IsInsert, int Offset, string Text);
 
+        public event EventHandler? TextChanged;
+        public event EventHandler<(int Line, int Column)>? CaretMoved;
         public NeoEditor()
         {
-            _doc = new PieceTreeEngine("using System;\n\npublic class HelloWorld {\n    // Type your code here\n}");
+            _doc = new PieceTreeEngine("");
             Focusable = true;
             Cursor = new Cursor(StandardCursorType.Ibeam);
 
@@ -77,7 +126,35 @@ namespace Notepad.NeoEdit
                 InvalidateVisual();
             };
         }
+        private Typeface GetTypeface()
+        {
+            return new Typeface(FontFamily, FontStyle.Normal, FontWeight.Normal);
+        }
+        protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+        {
+            base.OnPropertyChanged(change);
 
+            if (change.Property == TextProperty)
+            {
+                // Handled in setter above, or handle here if binding OneWay
+                var newText = change.GetNewValue<string>();
+                // Only reload if the change didn't come from our own internal typing
+                // (Optimization: Check if _doc.Length matches to avoid reload loops)
+                if (_doc.Length == 0 || newText != _doc.GetTextInRange(0, _doc.Length))
+                {
+                    _doc = new PieceTreeEngine(newText ?? "");
+                    _layoutCache.Clear();
+                    InvalidateVisual();
+                }
+            }
+            else if (change.Property == FontFamilyProperty ||
+                     change.Property == FontSizeProperty ||
+                     change.Property == ForegroundProperty)
+            {
+                _layoutCache.Clear(); // Font changed, invalid layout
+                InvalidateVisual();
+            }
+        }
         // --- Input ---
 
         protected override void OnTextInput(TextInputEventArgs e)
@@ -158,6 +235,7 @@ namespace Notepad.NeoEdit
                 _undoStack.Push(new EditOp(true, offset, text));
                 _redoStack.Clear();
             }
+            TextChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private void ApplyDelete(int offset, int len, bool record)
@@ -185,9 +263,14 @@ namespace Notepad.NeoEdit
                 _undoStack.Push(new EditOp(false, offset, deletedText));
                 _redoStack.Clear();
             }
+            TextChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        private void DeleteSelection()
+        public void InsertAtCaret(string text)
+        {
+
+        }
+        public void DeleteSelection()
         {
             if (_caretOffset == _anchorOffset) return;
             int start = Math.Min(_caretOffset, _anchorOffset);
@@ -195,7 +278,7 @@ namespace Notepad.NeoEdit
             ApplyDelete(start, len, true);
         }
 
-        private void Undo()
+        public void Undo()
         {
             if (_undoStack.Count == 0) return;
             var op = _undoStack.Pop();
@@ -208,7 +291,7 @@ namespace Notepad.NeoEdit
             InvalidateVisual();
         }
 
-        private void Redo()
+        public void Redo()
         {
             if (_redoStack.Count == 0) return;
             var op = _redoStack.Pop();
@@ -248,21 +331,23 @@ namespace Notepad.NeoEdit
             {
                 // 1. Line Number
                 var lineNum = new FormattedText((i + 1).ToString(), System.Globalization.CultureInfo.CurrentCulture,
-                    FlowDirection.LeftToRight, _typeface, _fontSize * 0.8, Brushes.Gray);
+                    FlowDirection.LeftToRight, GetTypeface(), _fontSize * 0.8, Brushes.Gray);
                 context.DrawText(lineNum, new Point(GutterWidth - lineNum.Width - 5, y + 2));
 
-                // 2. Text Layout
+                // 2. Text Layout - Get Content & Expand Tabs
+                string raw = _doc.GetLineContent(i) ?? "";
+                string expanded = ExpandTabs(raw);
+
+                // 3. Text Layout (Create or Retrieve from Cache)
                 if (!_layoutCache.TryGetValue(i, out var layout))
                 {
-                    string raw = _doc.GetLineContent(i) ?? "";
-                    string expanded = ExpandTabs(raw);
                     layout = new TextLayout(expanded, _typeface, _fontSize, Brushes.Black);
                     _layoutCache[i] = layout;
                 }
 
-                // 3. Selection
+                // 4. Selection Rendering
                 int lineStartOffset = _doc.GetOffsetFromLineColumn(i, 0);
-                int lineLen = _doc.GetLineContent(i)?.Length ?? 0;
+                int lineLen = raw.Length;
                 int lineEndOffset = lineStartOffset + lineLen;
 
                 if (selStart != selEnd)
@@ -271,8 +356,8 @@ namespace Notepad.NeoEdit
                     int e = Math.Min(selEnd, lineEndOffset);
                     if (s < e)
                     {
-                        int vStart = DocToVisualIndex(_doc.GetLineContent(i) ?? "", s - lineStartOffset);
-                        int vEnd = DocToVisualIndex(_doc.GetLineContent(i) ?? "", e - lineStartOffset);
+                        int vStart = DocToVisualIndex(raw, s - lineStartOffset);
+                        int vEnd = DocToVisualIndex(raw, e - lineStartOffset);
 
                         foreach (var rect in layout.HitTestTextRange(vStart, vEnd - vStart))
                         {
@@ -282,24 +367,23 @@ namespace Notepad.NeoEdit
                     }
                 }
 
-                // 4. Syntax Highlighting Overlay (Regex)
-                DrawSyntaxOverlay(context, layout, y);
+                // 5. Syntax Highlighting Overlay (Regex) (Pass 'expanded' string explicitly)
+                DrawSyntaxOverlay(context, layout, expanded, y);
 
-                // 5. Draw Text
+                // 6. Draw Text
                 using (context.PushTransform(Matrix.CreateTranslation(GutterWidth + 5, y)))
                 {
                     layout.Draw(context, new Point(0, 0));
                 }
 
-                // 6. Caret
+                // 7. Caret Rendering
                 if (_caretVisible && _caretOffset >= lineStartOffset && _caretOffset <= lineEndOffset)
                 {
                     int localCaret = _caretOffset - lineStartOffset;
-                    string txt = _doc.GetLineContent(i) ?? "";
-                    // Handle case where caret is at the end of the line
-                    if (localCaret >= 0 && localCaret <= txt.Length)
+                    // Handle caret at end of line (valid position)
+                    if (localCaret >= 0 && localCaret <= raw.Length)
                     {
-                        int vCaret = DocToVisualIndex(txt, localCaret);
+                        int vCaret = DocToVisualIndex(raw, localCaret);
                         var hit = layout.HitTestTextPosition(vCaret);
                         context.DrawLine(new Pen(Brushes.Black, 1.5),
                             new Point(hit.X + GutterWidth + 5, y),
@@ -332,7 +416,6 @@ namespace Notepad.NeoEdit
                     col++;
                 }
             }
-
             return sb.ToString();
         }
 
@@ -344,7 +427,6 @@ namespace Notepad.NeoEdit
                 if (s[i] == '\t') v += TabSize - (v % TabSize);
                 else v++;
             }
-
             return v;
         }
 
@@ -357,7 +439,6 @@ namespace Notepad.NeoEdit
                 if (v + w > visualIndex) return i;
                 v += w;
             }
-
             return s.Length;
         }
 
@@ -368,10 +449,9 @@ namespace Notepad.NeoEdit
         private static readonly Regex RxStr = new(@""".*?""", RegexOptions.Compiled);
         private static readonly Regex RxCom = new(@"//.*", RegexOptions.Compiled);
 
-        private void DrawSyntaxOverlay(DrawingContext ctx, TextLayout layout, double y)
+        // FIX: Added 'string text' argument because TextLayout doesn't expose it safely
+        private void DrawSyntaxOverlay(DrawingContext ctx, TextLayout layout, string text, double y)
         {
-            string text = layout.Text;
-
             void Highlight(Regex rx, Color color)
             {
                 foreach (Match m in rx.Matches(text))
@@ -398,6 +478,9 @@ namespace Notepad.NeoEdit
             _preferredCaretX = null;
             EnsureCaretVisible();
             InvalidateVisual();
+
+            var (line, col) = _doc.GetLineColumnFromOffset(_caretOffset);
+            CaretMoved?.Invoke(this, (line + 1, col + 1));
         }
 
         private void MoveCaretVertical(int delta, bool sel)
@@ -413,6 +496,8 @@ namespace Notepad.NeoEdit
                     int local = _caretOffset - start;
                     string txt = _doc.GetLineContent(line) ?? "";
                     int vIndex = DocToVisualIndex(txt, local);
+
+                    // FIX: Get X from the layout geometry directly
                     _preferredCaretX = layout.HitTestTextPosition(vIndex).X;
                 }
             }
@@ -420,14 +505,20 @@ namespace Notepad.NeoEdit
             string nextTxt = _doc.GetLineContent(nextLine) ?? "";
             string nextExp = ExpandTabs(nextTxt);
             var nextLayout = new TextLayout(nextExp, _typeface, _fontSize, Brushes.Black);
+
+            // FIX: HitTestPoint now returns result, we use HitTestTextPosition to get X/Rect if needed, 
+            // but here we just need the text index from the pixel X.
             var hit = nextLayout.HitTestPoint(new Point(_preferredCaretX ?? 0, 0));
             int vCol = hit.TextPosition;
+
             int docCol = VisualToDocIndex(nextTxt, vCol);
 
             _caretOffset = _doc.GetOffsetFromLineColumn(nextLine, docCol);
             if (!sel) _anchorOffset = _caretOffset;
             EnsureCaretVisible();
             InvalidateVisual();
+            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
+            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
         }
 
         private void MoveCaretToLineEdge(bool start, bool sel)
@@ -444,6 +535,8 @@ namespace Notepad.NeoEdit
             _preferredCaretX = null;
             EnsureCaretVisible();
             InvalidateVisual();
+            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
+            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
         }
 
         private void ScrollPage(int dir, bool sel)
@@ -476,16 +569,23 @@ namespace Notepad.NeoEdit
             string txt = _doc.GetLineContent(line) ?? "";
             string exp = ExpandTabs(txt);
             var layout = new TextLayout(exp, _typeface, _fontSize, Brushes.Black);
-            var hit = layout.HitTestPoint(new Point(p.X, 0));
 
+            // FIX: Get TextPosition from HitTestResult
+            var hit = layout.HitTestPoint(new Point(p.X, 0));
             int docCol = VisualToDocIndex(txt, hit.TextPosition);
+
             _caretOffset = _doc.GetOffsetFromLineColumn(line, docCol);
 
             if (!e.KeyModifiers.HasFlag(KeyModifiers.Shift)) _anchorOffset = _caretOffset;
 
-            _preferredCaretX = hit.Location.X;
+            // FIX: Get correct X for preferred position
+            _preferredCaretX = layout.HitTestTextPosition(hit.TextPosition).X;
+
             InvalidateVisual();
             Focus();
+
+            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
+            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
         }
 
         private void OnPointerMoved(object sender, PointerEventArgs e)
@@ -519,22 +619,38 @@ namespace Notepad.NeoEdit
             InvalidateVisual();
         }
 
-        private async void CopyAsync()
+        public void SelectAll() { _anchorOffset = 0; _caretOffset = _doc.Length; InvalidateVisual(); }
+        public string GetText() => _doc.GetTextInRange(0, _doc.Length);
+
+        public void ScrollToLine(int line)
+        {
+            double y = line * _lineHeight;
+            _scrollOffsetY = Math.Max(0, y - (Bounds.Height / 2)); // Center it roughly
+            InvalidateVisual();
+        }
+        public void Select(int start, int length)
+        {
+            _caretOffset = start + length;
+            _anchorOffset = start;
+            EnsureCaretVisible();
+            InvalidateVisual();
+        }
+        public void Copy()
         {
             if (_caretOffset == _anchorOffset) return;
             int start = Math.Min(_caretOffset, _anchorOffset);
             int len = Math.Abs(_caretOffset - _anchorOffset);
             string txt = _doc.GetTextInRange(start, len);
             var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null) await top.Clipboard.SetTextAsync(txt);
+            if (top?.Clipboard != null)  top.Clipboard.SetTextAsync(txt).ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
-        private async void PasteAsync()
+        public void Paste()
         {
             var top = TopLevel.GetTopLevel(this);
             if (top?.Clipboard != null)
             {
-                string txt = await top.Clipboard.GetTextAsync();
+                string txt = top.Clipboard.GetTextAsync().ConfigureAwait(false).GetAwaiter().GetResult();
                 if (!string.IsNullOrEmpty(txt))
                 {
                     DeleteSelection();
