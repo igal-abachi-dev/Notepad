@@ -75,24 +75,46 @@ public partial class MainWindow : Window
             }
         }
     }
+    private bool _isForceClosing = false;
 
     protected override async void OnClosing(WindowClosingEventArgs e)
     {
+        if (_isForceClosing)
+        {
+            base.OnClosing(e);
+            return;
+        }
         if (DataContext is MainWindowViewModel vm)
         {
             // Check for unsaved changes
             if (vm.Document.IsModified)
             {
-                var shouldClose = await vm.CheckSaveChangesAsync();
-                if (!shouldClose)
+                // 2. CRITICAL: Cancel the close immediately so we can show a dialog async
+                e.Cancel = true;
+
+                // 3. Ask user
+                bool canClose = await ViewModel.CheckSaveChangesAsync();
+
+                if (canClose)
                 {
-                    e.Cancel = true;
-                    return;
+                    // 4. Save settings
+                    ViewModel.SaveWindowPlacement(Position, ClientSize);
+                    ViewModel.SaveSessionSettings();
+
+                    // 5. Set flag and re-trigger close
+                    _isForceClosing = true;
+                    Close();
                 }
+                // IMPORTANT: Return here. 
+                // If we cancelled (e.Cancel=true), we stop.
+                // If we re-triggered Close(), that new call will hit the `if(_isForceClosing)` block.
+                return;
             }
 
-            vm.SaveWindowPlacement(Position, ClientSize);
-            vm.SaveSessionSettings();
+                // Not modified, just save settings and close
+                ViewModel?.SaveWindowPlacement(Position, ClientSize);
+                ViewModel?.SaveSessionSettings();
+            
         }
         base.OnClosing(e);
     }

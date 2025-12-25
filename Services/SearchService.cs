@@ -1,5 +1,4 @@
-using AvaloniaEdit;
-using AvaloniaEdit.Document;
+using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using System;
 using System.Text.RegularExpressions;
@@ -12,27 +11,24 @@ namespace NotepadAvalonia.Services;
 /// </summary>
 public class SearchService
 {
-    public (SearchResult? result, bool wrapped) FindNext(TextEditor editor, SearchSettings settings)
+    public (SearchResult? result, bool wrapped) FindNext(NeoEditor editor, SearchSettings settings)
     {
         return Find(editor, settings, forward: true);
     }
 
-    public (SearchResult? result, bool wrapped) FindPrevious(TextEditor editor, SearchSettings settings)
+    public (SearchResult? result, bool wrapped) FindPrevious(NeoEditor editor, SearchSettings settings)
     {
         return Find(editor, settings, forward: false);
     }
 
-    private (SearchResult? result, bool wrapped) Find(TextEditor editor, SearchSettings settings, bool forward)
+    private (SearchResult? result, bool wrapped) Find(NeoEditor editor, SearchSettings settings, bool forward)
     {
-        var document = editor.Document;
-        var text = document.Text;
+        var text = editor.GetText();
         var searchText = settings.SearchString;
 
         if (string.IsNullOrEmpty(searchText)) return (null, false);
 
-        int startPos = forward
-            ? editor.SelectionStart + editor.SelectionLength
-            : Math.Max(0, editor.SelectionStart - 1);
+        int startPos = forward ? editor.CaretOffset : Math.Max(0, editor.CaretOffset - 1);
 
         bool wrapped = false;
 
@@ -106,67 +102,59 @@ public class SearchService
         return (null, wrapped);
     }
 
-    public int ReplaceNext(TextEditor editor, SearchSettings settings)
+    public int ReplaceNext(NeoEditor editor, SearchSettings settings)
     {
         var (result, _) = FindNext(editor, settings);
         if (result != null)
         {
-            editor.Document.Replace(result.StartOffset, result.Length, settings.ReplaceString);
+            editor.ReplaceRange(result.StartOffset, result.Length, settings.ReplaceString);
             return 1;
         }
         return 0;
     }
 
-    public int ReplaceAll(TextEditor editor, SearchSettings settings)
-    {
-        if (string.IsNullOrEmpty(settings.SearchString))
-        {
-            return 0;
-        }
 
+
+    public int ReplaceAll(NeoEditor editor, SearchSettings settings)
+    {
+        if (string.IsNullOrEmpty(settings.SearchString)) return 0;
+
+        string text = editor.GetText();
+        string newText;
         int count = 0;
-        var text = editor.Document.Text;
 
         if (settings.UseRegex)
         {
             var options = settings.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
             var regex = new Regex(settings.SearchString, options);
-            var matches = regex.Matches(text);
-            count = matches.Count;
-            if (count > 0)
-            {
-                text = regex.Replace(text, settings.ReplaceString);
-            }
+            count = regex.Matches(text).Count;
+            newText = regex.Replace(text, settings.ReplaceString);
         }
         else
         {
-            var comparison = settings.MatchCase
-                ? StringComparison.Ordinal
-                : StringComparison.OrdinalIgnoreCase;
-
-            int index = 0;
-            while ((index = text.IndexOf(settings.SearchString, index, comparison)) >= 0)
+            // Simple replace all
+            if (settings.MatchCase)
             {
-                if (settings.WholeWord && !IsWholeWordMatch(text, index, settings.SearchString.Length))
-                {
-                    index += settings.SearchString.Length;
-                    continue;
-                }
-
-                text = text.Remove(index, settings.SearchString.Length)
-                           .Insert(index, settings.ReplaceString);
-                index += settings.ReplaceString.Length;
-                count++;
+                count = (text.Length - text.Replace(settings.SearchString, "").Length) / settings.SearchString.Length;
+                newText = text.Replace(settings.SearchString, settings.ReplaceString);
+            }
+            else
+            {
+                // Case-insensitive replace is trickier, standard Replace(str, str) is case sensitive
+                // Using Regex for convenience here
+                var regex = new Regex(Regex.Escape(settings.SearchString), RegexOptions.IgnoreCase);
+                count = regex.Matches(text).Count;
+                newText = regex.Replace(text, settings.ReplaceString);
             }
         }
 
         if (count > 0)
         {
-            editor.Document.Text = text;
+            editor.Text = newText; // Triggers full reload, safest for ReplaceAll
         }
-
         return count;
     }
+
 
     private int FindForward(string text, string searchText, int startPos, StringComparison comparison, bool wholeWord)
     {

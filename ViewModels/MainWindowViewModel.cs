@@ -2,7 +2,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media;
-using AvaloniaEdit.Document;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using MsBox.Avalonia;
@@ -47,7 +46,10 @@ public partial class MainWindowViewModel : ObservableObject
     //private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
 
     [ObservableProperty]
-    private string _fileContent = "";
+    private string _fileContent = ""; 
+    
+    [ObservableProperty]
+    private SyntaxLanguage _currentLanguage = SyntaxLanguage.Plain;
 
     [ObservableProperty]
     private PageSetupSettings _pageSetupSettings = new();
@@ -94,6 +96,7 @@ public partial class MainWindowViewModel : ObservableObject
         Document.Encoding = _fileService.GetEncoding(_settings.LastEncoding);
         Document.EncodingType = _settings.LastEncoding;
         Document.SaveEncodingType = _settings.LastEncoding;
+
         foreach (var path in _settingsService.LoadRecentFiles())
         {
             RecentFiles.Add(path);
@@ -106,6 +109,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CanToggleStatusBar));
         UpdateEncodingDisplay();
     }
+
     public void InitializeEditor(NeoEditor editor)
     {
         EditorControl = editor;
@@ -114,6 +118,7 @@ public partial class MainWindowViewModel : ObservableObject
         EditorControl.TextChanged += OnEditorTextChanged;
         EditorControl.CaretMoved += (s, pos) => UpdateCaretPosition(pos.Line, pos.Column);
     }
+
     private void OnEditorTextChanged(object? sender, EventArgs e)
     {
         if (!Document.IsModified)
@@ -123,33 +128,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
         UpdateStatus();
     }
+
     public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
     public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
     public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
     public bool CanToggleStatusBar => !Settings.WordWrap;
 
-    private void OnTextChanged(object? sender, EventArgs e)
-    {
-        if (!Document.IsModified)
-        {
-            Document.IsModified = true;
-            OnPropertyChanged(nameof(Document));
-        }
-
-        UpdateStatus();
-    }
-
-    //partial void OnTextDocumentChanging(TextDocument value)
-    //{
-    //    TextDocument.TextChanged -= OnTextChanged;
-    //}
-
-    //partial void OnTextDocumentChanged(TextDocument value)
-    //{
-    //    TextDocument.TextChanged += OnTextChanged;
-    //}
-
-    // ==================== File Commands ====================
+    // --- Commands ---
 
     /// <summary>
     /// Maps to: Command ID 1, function_14000fe24(1)
@@ -160,6 +145,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (!await CheckSaveChangesAsync()) return;
 
         FileContent = ""; // Clears the editor via OneWay binding
+        CurrentLanguage = SyntaxLanguage.Plain; // Reset to Plain
         Document = new DocumentModel
         {
             Encoding = _fileService.GetEncoding(_settings.LastEncoding),
@@ -221,6 +207,9 @@ public partial class MainWindowViewModel : ObservableObject
                 LineEnding = lineEnding
             };
 
+            // Auto-Detect Language
+            CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
+
             _settings.LastEncoding = encodingType;
             _settingsService.SaveEditorSettings(_settings);
             UpdateEncodingDisplay();
@@ -280,25 +269,21 @@ public partial class MainWindowViewModel : ObservableObject
 
         var encodingDialog = new EncodingDialog(Document.SaveEncodingType);
         var encodingSelection = await encodingDialog.ShowDialog<FileEncodingType?>(GetMainWindow());
-        if (!encodingSelection.HasValue)
+        if (encodingSelection.HasValue)
         {
-            return;
+            Document.SaveEncodingType = encodingSelection.Value;
+            await SaveToFileAsync(result, encodingSelection.Value);
         }
-
-        Document.SaveEncodingType = encodingSelection.Value;
-        await SaveToFileAsync(result, encodingSelection.Value);
     }
 
     private async Task SaveToFileAsync(string path, FileEncodingType encodingType)
     {
         try
         {
-            string currentContent = EditorControl.GetText();
-            await _fileService.SaveFileAsync(
-                path,
-                currentContent,
-                encodingType,
-                Document.LineEnding);
+            if (EditorControl == null) return;
+            string currentContent = EditorControl.GetText(); // Pull from NeoEditor
+
+            await _fileService.SaveFileAsync(path, currentContent, encodingType, Document.LineEnding);
 
             Document.FilePath = path;
             Document.IsUntitled = false;
@@ -306,6 +291,7 @@ public partial class MainWindowViewModel : ObservableObject
             Document.EncodingType = encodingType;
             Document.SaveEncodingType = encodingType;
             Document.Encoding = _fileService.GetEncoding(encodingType);
+
             _settings.LastEncoding = encodingType;
             _settingsService.SaveEditorSettings(_settings);
             OnPropertyChanged(nameof(Document));
@@ -372,7 +358,7 @@ public partial class MainWindowViewModel : ObservableObject
         var culture = CultureInfo.CurrentCulture;
         var dateTime = $"{now.ToString("d", culture)} {now.ToString("t", culture)}";
 
-        EditorControl?.InsertAtCaret(dateTime); 
+        EditorControl?.InsertAtCaret(dateTime);
     }
 
     // ==================== Find/Replace ====================
@@ -406,11 +392,12 @@ public partial class MainWindowViewModel : ObservableObject
             _settingsService.SavePageSetupSettings(PageSetupSettings);
         }
     }
+
     [RelayCommand]
-    private async Task PrintAsync() 
+    private async Task PrintAsync()
     {
         var pages = _printService.Paginate(
-            TextDocument.Text,
+            EditorControl.GetText(),
             Document,
             PageSetupSettings,
             charsPerLine: 80,
@@ -425,12 +412,12 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task OnExitAsync()
     {
-        if (await CheckSaveChangesAsync())
+        //if (await CheckSaveChangesAsync())
         {
-            SaveSessionSettings();
+            //SaveSessionSettings();
             GetMainWindow().Close();
         }
-    }
+    } 
 
     /// <summary>
     /// Maps to: Command ID 28 (F3)
@@ -450,65 +437,45 @@ public partial class MainWindowViewModel : ObservableObject
         await FindCoreAsync(reverse: true);
     }
 
+
     private async Task FindCoreAsync(bool reverse)
     {
-        if (TextEditor == null) return;
-        if (string.IsNullOrEmpty(SearchSettings.SearchString))
-        {
-            return;
-        }
+        if (EditorControl == null) return;
+        if (string.IsNullOrEmpty(SearchSettings.SearchString)) return;
 
         var searchUp = reverse ? !SearchSettings.SearchUp : SearchSettings.SearchUp;
+
+        // Updated to use NeoEditor
         var (result, wrapped) = searchUp
-            ? _searchService.FindPrevious(TextEditor, SearchSettings)
-            : _searchService.FindNext(TextEditor, SearchSettings);
+            ? _searchService.FindPrevious(EditorControl, SearchSettings)
+            : _searchService.FindNext(EditorControl, SearchSettings);
 
         if (result != null)
         {
-            TextEditor.Select(result.StartOffset, result.Length);
-            TextEditor.ScrollToLine(TextEditor.Document.GetLineByOffset(result.StartOffset).LineNumber);
+            EditorControl.Select(result.StartOffset, result.Length);
+            // EditorControl.ScrollToLine(TextEditor.Document.GetLineByOffset(result.StartOffset).LineNumber);
+            // EditorControl handles scrolling in Select logic automatically or add ScrollTo here
             return;
         }
 
-        var message = wrapped
-            ? "Notepad has finished searching the document."
-            : $"Cannot find \"{SearchSettings.SearchString}\"";
-
-        await MessageBoxManager.GetMessageBoxStandard(
-            "Notepad",
-            message,
-            ButtonEnum.Ok).ShowAsync();
-        StatusText = message;
+        await ShowErrorAsync(wrapped ? "Search wrapped." : $"Cannot find \"{SearchSettings.SearchString}\"");
     }
 
     [RelayCommand]
     private async Task ReplaceNext()
     {
-        if (TextEditor == null) return;
-        if (string.IsNullOrEmpty(SearchSettings.SearchString))
-        {
-            return;
-        }
+        if (EditorControl == null || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
 
-        var (result, wrapped) = SearchSettings.SearchUp
-            ? _searchService.FindPrevious(TextEditor, SearchSettings)
-            : _searchService.FindNext(TextEditor, SearchSettings);
-
+        // Find next logic
+        var (result, _) = _searchService.FindNext(EditorControl, SearchSettings);
         if (result == null)
         {
-            var message = wrapped
-                ? "Notepad has finished searching the document."
-                : $"Cannot find \"{SearchSettings.SearchString}\"";
-            await MessageBoxManager.GetMessageBoxStandard(
-                "Notepad",
-                message,
-                ButtonEnum.Ok).ShowAsync();
-            StatusText = message;
+            await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
             return;
         }
 
-        TextEditor.Document.Replace(result.StartOffset, result.Length, SearchSettings.ReplaceString);
-
+        // Perform replace on NeoEditor
+        EditorControl.ReplaceRange(result.StartOffset, result.Length, SearchSettings.ReplaceString);
         Document.IsModified = true;
         OnPropertyChanged(nameof(Document));
     }
@@ -516,19 +483,12 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task ReplaceAll()
     {
-        if (TextEditor == null) return;
-        if (string.IsNullOrEmpty(SearchSettings.SearchString))
-        {
-            return;
-        }
+        if (EditorControl == null || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
 
-        var count = _searchService.ReplaceAll(TextEditor, SearchSettings);
-        var message = $"Replaced {count} occurrence{(count == 1 ? "" : "s")}.";
-        StatusText = message;
-        await MessageBoxManager.GetMessageBoxStandard(
-            "Notepad",
-            message,
-            ButtonEnum.Ok).ShowAsync();
+        int count = _searchService.ReplaceAll(EditorControl, SearchSettings);
+        await MessageBoxManager.GetMessageBoxStandard("Notepad", $"Replaced {count} occurrence(s).", ButtonEnum.Ok)
+            .ShowAsync();
+
         if (count > 0)
         {
             Document.IsModified = true;
@@ -542,26 +502,19 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task GoToLineAsync()
     {
-        if (Settings.WordWrap)
-        {
-            await MessageBoxManager.GetMessageBoxStandard(
-                "Notepad",
-                "Go To is unavailable when Word Wrap is on.",
-                ButtonEnum.Ok).ShowAsync();
-            return;
-        }
-
-        var dialog = new GoToLineDialog(TextDocument.LineCount);
-
+        if (Settings.WordWrap || EditorControl == null) return;
+        var dialog = new GoToLineDialog(EditorControl.LineCount); // Use NeoEditor LineCount
         var result = await dialog.ShowDialog<int?>(GetMainWindow());
-        if (result.HasValue && TextEditor != null)
+
+        if (result.HasValue)
         {
-            var line = TextDocument.GetLineByNumber(result.Value);
-            TextEditor.CaretOffset = line.Offset;
-            TextEditor.ScrollToLine(result.Value);
+            EditorControl.ScrollToLine(result.Value - 1); // 0-based
+            EditorControl.MoveCaretToLine(result.Value - 1);
         }
     }
 
+
+    // --- Misc ---
     private void ShowFindOrReplaceDialog(bool findMode)
     {
         if (_findReplaceDialog != null)
@@ -576,6 +529,7 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _findReplaceDialog.Activate();
             }
+
             return;
         }
 
@@ -781,7 +735,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateStatus()
     {
-        var lines = TextDocument?.LineCount ?? 1;
+        var lines = EditorControl?.LineCount ?? 1;
         StatusText = $"Ln {CaretLine}, Col {CaretColumn}    Lines: {lines}";
     }
 
@@ -834,5 +788,5 @@ public partial class MainWindowViewModel : ObservableObject
             : throw new InvalidOperationException();
 
     private Task ShowErrorAsync(string message) =>
-        MessageBoxManager.GetMessageBoxStandard("Error",message, ButtonEnum.Ok).ShowAsync();
+        MessageBoxManager.GetMessageBoxStandard("Error", message, ButtonEnum.Ok).ShowAsync();
 }

@@ -1,4 +1,5 @@
 using AvaloniaEdit;
+using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using Xunit;
@@ -7,10 +8,10 @@ namespace Notepad.Tests;
 
 public class SearchServiceTests
 {
-    private static TextEditor CreateEditor(string text)
+    private static NeoEditor CreateEditor(string text)
     {
-        var editor = new TextEditor();
-        editor.Document.Text = text;
+        var editor = new NeoEditor();
+        editor.Text = text;
         return editor;
     }
 
@@ -49,6 +50,6 @@ public class SearchServiceTests
         var count = service.ReplaceAll(editor, settings);
 
         Assert.Equal(2, count);
-        Assert.Equal("dog scatter dog", editor.Document.Text);
+        Assert.Equal("dog scatter dog", editor.GetText());
     }
 }

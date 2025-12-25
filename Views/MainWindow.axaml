@@ -165,14 +165,20 @@
                                  VerticalAlignment="Stretch"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto" />-->
-
+        <ScrollViewer Name="EditorScroll"
+                      DockPanel.Dock="Bottom"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Visible">
         <neoEdit:NeoEditor Name="Editor"
                          MinHeight="300" MinWidth="300"
-                         Text="{Binding FileContent}"
+                         Text="{Binding FileContent, Mode=OneWay}"
+                         Language="{Binding CurrentLanguage}"
                          FontFamily="{Binding Settings.FontFamily}"
                          FontSize="{Binding EditorFontSize}"
                          Foreground="Black"
                          HorizontalAlignment="Stretch"
-                         VerticalAlignment="Stretch" />
+                         VerticalAlignment="Top" />
+        </ScrollViewer>
+
 	</DockPanel>
 </Window>

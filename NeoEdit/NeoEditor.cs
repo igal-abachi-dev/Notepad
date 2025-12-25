@@ -1,20 +1,26 @@
 ﻿using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
 using Avalonia.Threading;
+using HarfBuzzSharp;
+using Notepad.NeoEdit.Backend; // Ensure this matches your backend namespace
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Notepad.NeoEdit.Backend; // Ensure this matches your backend namespace
 
 namespace Notepad.NeoEdit
 {
-    public sealed class NeoEditor : Control
+    /*
+       Performance: You are using a Piece Table. You can open a 50MB log file in that window, and it will scroll just as smoothly as that small C# file.
+       Independence: You have zero dependencies on AvaloniaEdit. You own every pixel, every line of logic, and every keystroke.
+     */
+    public sealed class NeoEditor : Control , ILogicalScrollable
     {
         // 1. Define Styled Properties (This allows XAML binding)
         public static readonly StyledProperty<string> TextProperty =
@@ -28,6 +34,9 @@ namespace Notepad.NeoEdit
 
         public static readonly StyledProperty<IBrush> ForegroundProperty =
             AvaloniaProperty.Register<NeoEditor, IBrush>(nameof(Foreground), Brushes.Black);
+
+        public static readonly StyledProperty<SyntaxLanguage> LanguageProperty =
+            AvaloniaProperty.Register<NeoEditor, SyntaxLanguage>(nameof(Language), SyntaxLanguage.Plain);
 
         // 2. Public Properties wrappers
         public string Text
@@ -43,6 +52,12 @@ namespace Notepad.NeoEdit
                 _layoutCache.Clear();
                 InvalidateVisual();
             }
+        }
+
+        public SyntaxLanguage Language
+        {
+            get => GetValue(LanguageProperty);
+            set { SetValue(LanguageProperty, value); _layoutCache.Clear(); InvalidateVisual(); }
         }
 
         public FontFamily FontFamily
@@ -68,7 +83,7 @@ namespace Notepad.NeoEdit
         private readonly double _fontSize = 14;
         private readonly double _lineHeight = 22;
         private const int TabSize = 4;
-        private const double GutterWidth = 50;
+        private const double GutterWidth = 25;
 
         // Visual Cache
         private readonly Dictionary<int, TextLayout> _layoutCache = new();
@@ -89,7 +104,34 @@ namespace Notepad.NeoEdit
         private readonly Stack<EditOp> _undoStack = new();
         private readonly Stack<EditOp> _redoStack = new();
 
-        private record EditOp(bool IsInsert, int Offset, string Text);
+        private record EditOp(bool IsInsert, int Offset, string Text); 
+        
+        public int SelectionStart
+        {
+            get => Math.Min(_caretOffset, _anchorOffset);
+            set
+            {
+                int end = SelectionStart + SelectionLength; // Preserve end position
+                SetSelection(value, end - value);
+            }
+        }
+
+        public int SelectionLength
+        {
+            get => Math.Abs(_caretOffset - _anchorOffset);
+            set
+            {
+                SetSelection(_anchorOffset, value);
+            }
+        }
+        public void SetSelection(int start, int length)
+        {
+            _anchorOffset = start;
+            _caretOffset = start + length;
+            _preferredCaretX = null;
+            EnsureCaretVisible();
+            InvalidateVisual();
+        }
 
         public event EventHandler? TextChanged;
         public event EventHandler<(int Line, int Column)>? CaretMoved;
@@ -148,6 +190,7 @@ namespace Notepad.NeoEdit
                 }
             }
             else if (change.Property == FontFamilyProperty ||
+                     change.Property == LanguageProperty ||
                      change.Property == FontSizeProperty ||
                      change.Property == ForegroundProperty)
             {
@@ -168,8 +211,26 @@ namespace Notepad.NeoEdit
             InvalidateVisual();
         }
 
+        // 2. HELPER: Auto-Detect Line Direction
+        private FlowDirection GetLineDirection(string text)
+        {
+            // If Global is RTL, we might want to force everything RTL, 
+            // but usually "Notepad" style is Auto-Detect per line.
+
+            // Simple Heuristic: Check for first Strong LTR or RTL char
+            foreach (char c in text)
+            {
+                // Hebrew (0590-08FF) or Arabic (0600-06FF)
+                if (c >= 0x0590 && c <= 0x08FF) return FlowDirection.RightToLeft;
+                if (char.IsLetter(c)) return FlowDirection.LeftToRight; // English/Latin
+            }
+            // Default to Global setting if neutral (numbers/punctuation only)
+            return FlowDirection;
+        }
         protected override void OnKeyDown(KeyEventArgs e)
         {
+            bool handled = true;
+
             bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
             bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
 
@@ -205,23 +266,52 @@ namespace Notepad.NeoEdit
             // Commands
             else if (ctrl && e.Key == Key.Z) Undo();
             else if (ctrl && e.Key == Key.Y) Redo();
-            else if (ctrl && e.Key == Key.C) CopyAsync();
-            else if (ctrl && e.Key == Key.V) PasteAsync();
+            else if (ctrl && e.Key == Key.C) Copy();
+            else if (ctrl && e.Key == Key.V) Paste();
             else if (ctrl && e.Key == Key.X)
             {
-                CopyAsync();
-                DeleteSelection();
+                Cut();
             }
             else if (ctrl && e.Key == Key.A)
             {
-                _anchorOffset = 0;
-                _caretOffset = _doc.Length;
-                InvalidateVisual();
+                SelectAll();
             }
-
-            e.Handled = true;
+            else
+            {
+                // IMPORTANT: If we didn't match a special key, let it bubble up.
+                // This allows 'A', 'B', '!', etc. to generate OnTextInput.
+                handled = false;
+            }
+            if (handled)
+            {
+                e.Handled = true;
+            }
         }
 
+        public int CaretOffset { get => _caretOffset; set { _caretOffset = Math.Clamp(value, 0, _doc.Length); InvalidateVisual(); } }
+        public int LineCount => _doc.LineCount;
+
+        // Helper for SearchService
+        public void ReplaceRange(int start, int length, string newText)
+        {
+            ApplyDelete(start, length, true);
+            ApplyInsert(start, newText, true);
+            // Ensure caret moves to end of replacement
+            _caretOffset = start + newText.Length;
+            _anchorOffset = _caretOffset;
+            EnsureCaretVisible();
+            InvalidateVisual();
+            TextChanged?.Invoke(this, EventArgs.Empty);
+        }
+        // Helper for GoToLine
+        public void MoveCaretToLine(int lineIndex)
+        {
+            lineIndex = Math.Clamp(lineIndex, 0, LineCount - 1);
+            _caretOffset = _doc.GetOffsetFromLineColumn(lineIndex, 0);
+            _anchorOffset = _caretOffset;
+            EnsureCaretVisible();
+            InvalidateVisual();
+        }
         // --- Logic ---
 
         private void ApplyInsert(int offset, string text, bool record)
@@ -229,7 +319,8 @@ namespace Notepad.NeoEdit
             _doc.Insert(offset, text);
             _caretOffset = offset + text.Length;
             _anchorOffset = _caretOffset;
-            _preferredCaretX = null;
+            _preferredCaretX = null; 
+            UpdateScrollInfo();
             if (record)
             {
                 _undoStack.Push(new EditOp(true, offset, text));
@@ -251,7 +342,7 @@ namespace Notepad.NeoEdit
             _caretOffset = offset;
             _anchorOffset = offset;
             _preferredCaretX = null;
-
+            UpdateScrollInfo();
             if (delY < topY)
             {
                 // Simple adjust: if we removed logic above
@@ -268,7 +359,10 @@ namespace Notepad.NeoEdit
 
         public void InsertAtCaret(string text)
         {
-
+            DeleteSelection();
+            ApplyInsert(_caretOffset, text, true);
+            EnsureCaretVisible();
+            InvalidateVisual();
         }
         public void DeleteSelection()
         {
@@ -327,6 +421,8 @@ namespace Notepad.NeoEdit
             int selStart = Math.Min(_caretOffset, _anchorOffset);
             int selEnd = Math.Max(_caretOffset, _anchorOffset);
 
+            // Available width for text (Window width - gutter)
+            double textWidth = Math.Max(0, Bounds.Width - GutterWidth - 10);
             for (int i = firstLine; i < lastLine; i++)
             {
                 // 1. Line Number
@@ -338,10 +434,24 @@ namespace Notepad.NeoEdit
                 string raw = _doc.GetLineContent(i) ?? "";
                 string expanded = ExpandTabs(raw);
 
+                // Detect Direction for this specific line
+                var lineDir = GetLineDirection(expanded);
+
+                // Create Layout
+                // Important: Set TextAlignment based on direction so it visually aligns R or L
+                var alignment = (lineDir == FlowDirection.RightToLeft) ? TextAlignment.Right : TextAlignment.Left;
+
                 // 3. Text Layout (Create or Retrieve from Cache)
                 if (!_layoutCache.TryGetValue(i, out var layout))
                 {
-                    layout = new TextLayout(expanded, _typeface, _fontSize, Brushes.Black);
+                    //Generate Syntax Highlights 
+                    var overrides = SyntaxMatcher.GetOverrides(expanded, Language, GetTypeface(), FontSize, Foreground);
+
+                    layout = new TextLayout(expanded,GetTypeface(), _fontSize, Foreground, textAlignment: alignment,
+                        maxWidth: textWidth, maxHeight: _lineHeight,
+                        flowDirection: lineDir,
+                        textStyleOverrides: overrides);
+
                     _layoutCache[i] = layout;
                 }
 
@@ -368,7 +478,7 @@ namespace Notepad.NeoEdit
                 }
 
                 // 5. Syntax Highlighting Overlay (Regex) (Pass 'expanded' string explicitly)
-                DrawSyntaxOverlay(context, layout, expanded, y);
+                //DrawSyntaxOverlay(context, layout, expanded, y);
 
                 // 6. Draw Text
                 using (context.PushTransform(Matrix.CreateTranslation(GutterWidth + 5, y)))
@@ -619,14 +729,21 @@ namespace Notepad.NeoEdit
             InvalidateVisual();
         }
 
-        public void SelectAll() { _anchorOffset = 0; _caretOffset = _doc.Length; InvalidateVisual(); }
+        public void SelectAll()
+        {
+            _anchorOffset = 0;
+            _caretOffset = _doc.Length;
+            InvalidateVisual();
+        }
         public string GetText() => _doc.GetTextInRange(0, _doc.Length);
 
         public void ScrollToLine(int line)
         {
             double y = line * _lineHeight;
-            _scrollOffsetY = Math.Max(0, y - (Bounds.Height / 2)); // Center it roughly
-            InvalidateVisual();
+            double targetY = Math.Max(0, y - (Bounds.Height / 2)); // Center it roughly
+
+            // Use the Interface Property to update ScrollViewer
+            this.Offset = new Vector(Offset.X, targetY);
         }
         public void Select(int start, int length)
         {
@@ -635,6 +752,11 @@ namespace Notepad.NeoEdit
             EnsureCaretVisible();
             InvalidateVisual();
         }
+        public void Cut()
+        {
+            Copy();
+            DeleteSelection();
+        }
         public void Copy()
         {
             if (_caretOffset == _anchorOffset) return;
@@ -642,7 +764,7 @@ namespace Notepad.NeoEdit
             int len = Math.Abs(_caretOffset - _anchorOffset);
             string txt = _doc.GetTextInRange(start, len);
             var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null)  top.Clipboard.SetTextAsync(txt).ConfigureAwait(false).GetAwaiter().GetResult();
+            if (top?.Clipboard != null) top.Clipboard.SetTextAsync(txt).ConfigureAwait(false).GetAwaiter().GetResult();//blocks the UI thread
         }
 
         public void Paste()
@@ -650,7 +772,7 @@ namespace Notepad.NeoEdit
             var top = TopLevel.GetTopLevel(this);
             if (top?.Clipboard != null)
             {
-                string txt = top.Clipboard.GetTextAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                string txt = top.Clipboard.GetTextAsync().ConfigureAwait(false).GetAwaiter().GetResult(); //blocks the UI thread
                 if (!string.IsNullOrEmpty(txt))
                 {
                     DeleteSelection();
@@ -659,6 +781,146 @@ namespace Notepad.NeoEdit
                     InvalidateVisual();
                 }
             }
+        }
+
+
+        public async void CopyAsync()
+        {
+            if (_caretOffset == _anchorOffset) return;
+            int start = Math.Min(_caretOffset, _anchorOffset);
+            int len = Math.Abs(_caretOffset - _anchorOffset);
+            string txt = _doc.GetTextInRange(start, len);
+            var top = TopLevel.GetTopLevel(this);
+            if (top?.Clipboard != null)
+                await top.Clipboard.SetTextAsync(txt); // Await safely
+        }
+
+        public async void PasteAsync()
+        {
+            var top = TopLevel.GetTopLevel(this);
+            if (top?.Clipboard != null)
+            {
+                string txt = await top.Clipboard.GetTextAsync(); // Await safely
+                if (!string.IsNullOrEmpty(txt))
+                {
+                    DeleteSelection();
+                    ApplyInsert(_caretOffset, txt, true);
+                    EnsureCaretVisible();
+                    InvalidateVisual();
+                }
+            }
+        }
+
+        public bool CanHorizontallyScroll { get; set; } = true;
+        public bool CanVerticallyScroll { get; set; } = true;
+
+        // This is the "State" the ScrollViewer reads
+        public bool IsLogicalScrollEnabled => true;
+
+        public Size ScrollSize => new Size(50, _lineHeight); // Step size for arrow keys
+        public Size PageScrollSize => new Size(Bounds.Width, Bounds.Height);
+
+        private Size _extent;
+        public Size Extent
+        {
+            get => _extent;
+            private set
+            {
+                if (_extent != value)
+                {
+                    _extent = value;
+                    ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        private Size _viewport;
+        public Size Viewport
+        {
+            get => _viewport;
+            private set
+            {
+                if (_viewport != value)
+                {
+                    _viewport = value;
+                    ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        private Vector _offset;
+        public Vector Offset
+        {
+            get => _offset;
+            set
+            {
+                // This setter is called by the ScrollViewer
+                _offset = value;
+                _scrollOffsetY = value.Y; // Sync our internal render offset
+                                          // _scrollOffsetX = value.X; // (Future horizontal support)
+                InvalidateVisual();
+                ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public event EventHandler? ScrollInvalidated;
+
+        public bool BringIntoView(Control target, Rect targetRect) { return false; }
+        public Control? GetControlInDirection(NavigationDirection direction, Control? from) { return null; }
+        public void RaiseScrollInvalidated(EventArgs e) => ScrollInvalidated?.Invoke(this, e);
+
+        // --- Helper to Update ScrollBars ---
+
+        // Call this whenever Text changes or Control Resizes
+        private void UpdateScrollInfo()
+        {
+            // 1. Calculate Content Height (Extent)
+            double totalHeight = Math.Max(Bounds.Height, _doc.LineCount * _lineHeight);
+
+            // 2. Calculate Viewport
+            Size newViewport = Bounds.Size;
+            Size newExtent = new Size(Bounds.Width, totalHeight); // Horizontal TODO later
+
+            // 3. Update if changed
+            bool changed = false;
+            if (newViewport != Viewport) { _viewport = newViewport; changed = true; }
+            if (newExtent != Extent) { _extent = newExtent; changed = true; }
+
+            if (changed) ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+        }
+
+        // --- Hook into Layout Pass ---
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            // 1. Calculate Width
+            // If parent gives specific width (e.g. Window), use it.
+            // If parent gives Infinity (e.g. StackPanel), fall back to MinWidth or 100.
+            double width = double.IsInfinity(availableSize.Width)
+                ? (MinWidth > 0 ? MinWidth : 300)
+                : availableSize.Width;
+
+            // 2. Calculate Height
+            // If parent gives specific height, use it.
+            // If parent gives Infinity, fall back to MinHeight or 100.
+            double height = double.IsInfinity(availableSize.Height)
+                ? (MinHeight > 0 ? MinHeight : 300)
+                : availableSize.Height;
+
+            return new Size(width, height);
+        }
+
+        protected override void OnSizeChanged(SizeChangedEventArgs e)
+        {
+            base.OnSizeChanged(e);
+
+            // CRITICAL: Window size changed, so the "MaxWidth" for text changed.
+            // We must clear the cache so lines are re-measured with the new width.
+            _layoutCache.Clear();
+
+            // Update scrollbars (if view size changed, scroll thumb might need resizing)
+            UpdateScrollInfo();
+
+            InvalidateVisual();
         }
     }
 }
