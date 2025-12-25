@@ -17,13 +17,6 @@ and uses textLayout for rendering text
 
 
 
-This is a strong foundation, but we can make it look much more professional and compelling on GitHub. You have built something technically impressive (the Piece Table engine), so the README should highlight that architecture clearly.
-
-Here is a improved version. It creates a better structure, highlights the "Why" (Motivation) and the "How" (Architecture), and organizes your features.
-
-***
-
-
 In Windows 11, the original Notepad evolved from a lightweight Win32 application into a heavier UWP/WinUI app. While it added features like tabs and AI cowriters, it lost the instant startup and raw simplicity that defined the original.
 
 This project aims to restore that simplicity while using modern engineering:
