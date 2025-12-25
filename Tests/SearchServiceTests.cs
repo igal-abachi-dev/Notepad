@@ -1,4 +1,3 @@
-using AvaloniaEdit;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;

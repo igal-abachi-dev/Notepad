@@ -346,7 +346,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// Maps to: Command ID 25 (EM_SETSEL 0, -1)
     /// </summary>
     [RelayCommand]
-    private void SelectAll() => TextEditor?.SelectAll();
+    private void SelectAll() => EditorControl?.SelectAll();
 
     /// <summary>
     /// Maps to: Command ID 26
@@ -779,8 +779,6 @@ public partial class MainWindowViewModel : ObservableObject
         _settingsService.SaveRecentFiles(RecentFiles);
     }
 
-    // TextEditor reference (set from View)
-    public AvaloniaEdit.TextEditor? TextEditor { get; set; }
 
     private Window GetMainWindow() =>
         Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop

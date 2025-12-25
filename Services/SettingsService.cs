@@ -4,7 +4,16 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
+
+
+[JsonSerializable(typeof(AppSettings))]
+[JsonSourceGenerationOptions(WriteIndented = true)] // Optional: makes JSON readable
+internal partial class AppSettingsContext : JsonSerializerContext
+{
+}
 
 /// <summary>
 /// Cross-platform settings storage
@@ -36,15 +45,12 @@ public class SettingsService
             return new AppSettings();
 
         var json = File.ReadAllText(_settingsPath);
-        return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+        return JsonSerializer.Deserialize<AppSettings>(json, AppSettingsContext.Default.AppSettings) ?? new AppSettings();
     }
 
     private void SaveAll(AppSettings settings)
     {
-        var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
-        {
-            WriteIndented = true
-        });
+        var json = JsonSerializer.Serialize(settings, AppSettingsContext.Default.AppSettings);
         File.WriteAllText(_settingsPath, json);
     }
 
@@ -80,11 +86,11 @@ public class SettingsService
         SaveAll(all);
     }
 
-    private class AppSettings
-    {
-        public EditorSettings Editor { get; set; } = new();
-        public SearchSettings Search { get; set; } = new();
-        public PageSetupSettings PageSetup { get; set; } = new();
-        public List<string> RecentFiles { get; set; } = new();
-    }
+}
+public class AppSettings
+{
+    public EditorSettings Editor { get; set; } = new();
+    public SearchSettings Search { get; set; } = new();
+    public PageSetupSettings PageSetup { get; set; } = new();
+    public List<string> RecentFiles { get; set; } = new();
 }

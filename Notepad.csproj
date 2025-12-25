@@ -2,9 +2,22 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
-    <Nullable>enable</Nullable>
+	  <PublishAot>true</PublishAot>
+	  <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+
+
+	  <!-- 3. MSIX Packaging Settings --><!--
+	  <EnableMsixTooling>true</EnableMsixTooling>
+	  <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
+	  <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+	  <PackageCertificateKeyFile>Notepad_TemporaryKey.pfx</PackageCertificateKeyFile>
+	  <AppxPackageTestDir>AppPackages\</AppxPackageTestDir>
+
+	  --><!-- Store Identity (Change these later for real store submission) --><!--
+	  <ApplicationId>NotepadAvalonia</ApplicationId>
+	  <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>-->
   </PropertyGroup>
   
   <ItemGroup>
@@ -14,7 +27,6 @@
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.9" />
-    <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.3.0" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />

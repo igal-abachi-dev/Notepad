@@ -27,10 +27,5 @@
             <Setter Property="FontSize" Value="13" />
         </Style>
         
-        <!-- TextEditor styling -->
-        <Style Selector="avaloniaEdit|TextEditor">
-            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundAltHighBrush}" />
-            <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}" />
-        </Style>
     </Application.Styles>
 </Application>
