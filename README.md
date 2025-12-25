@@ -7,7 +7,7 @@ into c++ winrt(uwp/winui xaml) with richtext markdown , tabs , restart manager ,
 but they removed the simplicity it had , and made it slower load and heavy
 
 so this is remaking the classic notepad on modern stack so its notepad xaml ui , more maintainable,
-it is based on reversing original notepad c code and porting it to c# and modernizing it
+it is based on reversing original notepad c code from win10 exe , and porting it to c# and modernizing it
 
 text engine is based of piece Red-Black Tree of stringbuilder text buffer like vs code / vs 2026 editor
 instead of ropes<T> of avalonia edit 
