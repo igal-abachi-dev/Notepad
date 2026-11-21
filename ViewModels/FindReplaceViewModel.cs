@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using NotepadAvalonia.Models;
+using System.Threading.Tasks;
 
 namespace NotepadAvalonia.ViewModels;
 
@@ -111,24 +112,15 @@ public partial class FindReplaceViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void FindNext()
-    {
-        _owner.FindNextCommand.Execute(null);
-    }
+    private Task FindNextAsync() => _owner.FindNextCommand.ExecuteAsync(null);
 
     [RelayCommand]
-    private void Replace()
-    {
-        if (IsFindMode) return;
-        _owner.ReplaceNextCommand.Execute(null);
-    }
+    private Task ReplaceAsync() =>
+        IsFindMode ? Task.CompletedTask : _owner.ReplaceNextCommand.ExecuteAsync(null);
 
     [RelayCommand]
-    private void ReplaceAll()
-    {
-        if (IsFindMode) return;
-        _owner.ReplaceAllCommand.Execute(null);
-    }
+    private Task ReplaceAllAsync() =>
+        IsFindMode ? Task.CompletedTask : _owner.ReplaceAllCommand.ExecuteAsync(null);
 
     [RelayCommand]
     private void Close(Window? window)

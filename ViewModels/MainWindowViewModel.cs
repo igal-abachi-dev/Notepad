@@ -17,6 +17,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace NotepadAvalonia.ViewModels;
@@ -32,6 +33,8 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly PrintService _printService;
     private FindReplaceDialog? _findReplaceDialog;
     private bool _statusBarBeforeWrap = true;
+    private long _editVersion;
+    private string _loadedContent = "";
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -45,9 +48,6 @@ public partial class MainWindowViewModel : ObservableObject
     //[ObservableProperty]
     //private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
 
-    [ObservableProperty]
-    private string _fileContent = ""; 
-    
     [ObservableProperty]
     private SyntaxLanguage _currentLanguage = SyntaxLanguage.Plain;
 
@@ -112,15 +112,40 @@ public partial class MainWindowViewModel : ObservableObject
 
     public void InitializeEditor(NeoEditor editor)
     {
-        EditorControl = editor;
+        if (EditorControl == editor) return;
+        if (EditorControl != null)
+        {
+            _loadedContent = EditorControl.GetText();
+            EditorControl.TextChanged -= OnEditorTextChanged;
+            EditorControl.CaretMoved -= OnEditorCaretMoved;
+        }
 
-        // Subscribe to NeoEditor events
-        EditorControl.TextChanged += OnEditorTextChanged;
-        EditorControl.CaretMoved += (s, pos) => UpdateCaretPosition(pos.Line, pos.Column);
+        EditorControl = editor;
+        editor.TextChanged += OnEditorTextChanged;
+        editor.CaretMoved += OnEditorCaretMoved;
+        ResetEditor(_loadedContent);
     }
+
+    private void ResetEditor(string content)
+    {
+        _loadedContent = content;
+        if (EditorControl == null) return;
+
+        EditorControl.NewLine = Document.LineEnding switch
+        {
+            LineEndingStyle.LF => "\n",
+            LineEndingStyle.CR => "\r",
+            _ => "\r\n"
+        };
+        EditorControl.LoadDocument(content);
+    }
+
+    private void OnEditorCaretMoved(object? sender, (int Line, int Column) position) =>
+        UpdateCaretPosition(position.Line, position.Column);
 
     private void OnEditorTextChanged(object? sender, EventArgs e)
     {
+        _editVersion++;
         if (!Document.IsModified)
         {
             Document.IsModified = true;
@@ -144,7 +169,6 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (!await CheckSaveChangesAsync()) return;
 
-        FileContent = ""; // Clears the editor via OneWay binding
         CurrentLanguage = SyntaxLanguage.Plain; // Reset to Plain
         Document = new DocumentModel
         {
@@ -152,6 +176,7 @@ public partial class MainWindowViewModel : ObservableObject
             EncodingType = _settings.LastEncoding,
             SaveEncodingType = _settings.LastEncoding
         };
+        ResetEditor("");
         UpdateEncodingDisplay();
         UpdateStatus();
         UpdateCaretPosition(1, 1);
@@ -193,9 +218,11 @@ public partial class MainWindowViewModel : ObservableObject
     {
         try
         {
+            var previousDocument = Document;
+            long previousVersion = _editVersion;
             var (content, encoding, encodingType, lineEnding) = await _fileService.LoadFileAsync(path);
+            if (Document != previousDocument || _editVersion != previousVersion) return;
 
-            FileContent = content; // NeoEditor will pick this up via OneWay binding
             Document = new DocumentModel
             {
                 FilePath = path,
@@ -206,6 +233,7 @@ public partial class MainWindowViewModel : ObservableObject
                 SaveEncodingType = encodingType,
                 LineEnding = lineEnding
             };
+            ResetEditor(content);
 
             // Auto-Detect Language
             CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
@@ -271,7 +299,6 @@ public partial class MainWindowViewModel : ObservableObject
         var encodingSelection = await encodingDialog.ShowDialog<FileEncodingType?>(GetMainWindow());
         if (encodingSelection.HasValue)
         {
-            Document.SaveEncodingType = encodingSelection.Value;
             await SaveToFileAsync(result, encodingSelection.Value);
         }
     }
@@ -281,16 +308,19 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             if (EditorControl == null) return;
-            string currentContent = EditorControl.GetText(); // Pull from NeoEditor
+            var document = Document;
+            long savedVersion = _editVersion;
+            string currentContent = EditorControl.GetText();
 
-            await _fileService.SaveFileAsync(path, currentContent, encodingType, Document.LineEnding);
+            await _fileService.SaveFileAsync(path, currentContent, encodingType, document.LineEnding);
+            if (Document != document) return;
 
-            Document.FilePath = path;
-            Document.IsUntitled = false;
-            Document.IsModified = false;
-            Document.EncodingType = encodingType;
-            Document.SaveEncodingType = encodingType;
-            Document.Encoding = _fileService.GetEncoding(encodingType);
+            document.FilePath = path;
+            document.IsUntitled = false;
+            document.IsModified = _editVersion != savedVersion;
+            document.EncodingType = encodingType;
+            document.SaveEncodingType = encodingType;
+            document.Encoding = _fileService.GetEncoding(encodingType);
 
             _settings.LastEncoding = encodingType;
             _settingsService.SaveEditorSettings(_settings);
@@ -319,19 +349,33 @@ public partial class MainWindowViewModel : ObservableObject
     /// Maps to: Command ID 769 (WM_CUT)
     /// </summary>
     [RelayCommand]
-    private void Cut() => EditorControl?.Cut();
+    private Task CutAsync() => RunClipboardCommandAsync(editor => editor.CutAsync());
 
     /// <summary>
     /// Maps to: Command ID 770 (WM_COPY)
     /// </summary>
     [RelayCommand]
-    private void Copy() => EditorControl?.Copy();
+    private Task CopyAsync() => RunClipboardCommandAsync(editor => editor.CopyAsync());
 
     /// <summary>
     /// Maps to: Command ID 771 (WM_PASTE)
     /// </summary>
     [RelayCommand]
-    private void Paste() => EditorControl?.Paste();
+    private Task PasteAsync() => RunClipboardCommandAsync(editor => editor.PasteAsync());
+
+    private async Task RunClipboardCommandAsync(Func<NeoEditor, Task> operation)
+    {
+        if (EditorControl is not { } editor) return;
+
+        try
+        {
+            await operation(editor);
+        }
+        catch (Exception ex)
+        {
+            await ShowErrorAsync($"Cannot access the clipboard: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Maps to: Command ID 20
@@ -438,61 +482,52 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
 
-    private async Task FindCoreAsync(bool reverse)
+    private Task FindCoreAsync(bool reverse) => RunSearchAsync(async editor =>
     {
-        if (EditorControl == null) return;
-        if (string.IsNullOrEmpty(SearchSettings.SearchString)) return;
-
-        var searchUp = reverse ? !SearchSettings.SearchUp : SearchSettings.SearchUp;
-
-        // Updated to use NeoEditor
-        var (result, wrapped) = searchUp
-            ? _searchService.FindPrevious(EditorControl, SearchSettings)
-            : _searchService.FindNext(EditorControl, SearchSettings);
+        bool searchUp = reverse != SearchSettings.SearchUp;
+        var (result, _) = searchUp
+            ? _searchService.FindPrevious(editor, SearchSettings)
+            : _searchService.FindNext(editor, SearchSettings);
 
         if (result != null)
         {
-            EditorControl.Select(result.StartOffset, result.Length);
-            // EditorControl.ScrollToLine(TextEditor.Document.GetLineByOffset(result.StartOffset).LineNumber);
-            // EditorControl handles scrolling in Select logic automatically or add ScrollTo here
+            editor.SetSelection(result.StartOffset, result.Length);
             return;
         }
 
-        await ShowErrorAsync(wrapped ? "Search wrapped." : $"Cannot find \"{SearchSettings.SearchString}\"");
-    }
+        await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
+    });
 
     [RelayCommand]
-    private async Task ReplaceNext()
+    private Task ReplaceNext() => RunSearchAsync(async editor =>
     {
-        if (EditorControl == null || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
-
-        // Find next logic
-        var (result, _) = _searchService.FindNext(EditorControl, SearchSettings);
-        if (result == null)
-        {
+        if (_searchService.ReplaceNext(editor, SearchSettings) == 0)
             await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
-            return;
-        }
-
-        // Perform replace on NeoEditor
-        EditorControl.ReplaceRange(result.StartOffset, result.Length, SearchSettings.ReplaceString);
-        Document.IsModified = true;
-        OnPropertyChanged(nameof(Document));
-    }
+    });
 
     [RelayCommand]
-    private async Task ReplaceAll()
+    private Task ReplaceAll() => RunSearchAsync(async editor =>
     {
-        if (EditorControl == null || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
-
-        int count = _searchService.ReplaceAll(EditorControl, SearchSettings);
+        int count = _searchService.ReplaceAll(editor, SearchSettings);
         await MessageBoxManager.GetMessageBoxStandard("Notepad", $"Replaced {count} occurrence(s).", ButtonEnum.Ok)
             .ShowAsync();
+    });
 
-        if (count > 0)
+    private async Task RunSearchAsync(Func<NeoEditor, Task> operation)
+    {
+        if (EditorControl is not { } editor || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
+
+        try
         {
-            Document.IsModified = true;
-            OnPropertyChanged(nameof(Document));
+            await operation(editor);
+        }
+        catch (RegexParseException ex)
+        {
+            await ShowErrorAsync($"Invalid regular expression. {ex.Message}");
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            await ShowErrorAsync("The regular expression took too long. Try a simpler pattern.");
         }
     }
 

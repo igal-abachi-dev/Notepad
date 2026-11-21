@@ -2,6 +2,7 @@
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
 using Avalonia.Threading;
@@ -42,16 +43,7 @@ namespace Notepad.NeoEdit
         public string Text
         {
             get => GetValue(TextProperty);
-            set
-            {
-                SetValue(TextProperty, value);
-                // When Text is set from ViewModel, reload the doc
-                _doc = new PieceTreeEngine(value ?? "");
-                _caretOffset = 0;
-                _anchorOffset = 0;
-                _layoutCache.Clear();
-                InvalidateVisual();
-            }
+            set => LoadDocument(value);
         }
 
         public SyntaxLanguage Language
@@ -87,11 +79,11 @@ namespace Notepad.NeoEdit
 
         // Visual Cache
         private readonly Dictionary<int, TextLayout> _layoutCache = new();
-        private int _lastDocLength = -1;
 
         // State
         private int _caretOffset = 0;
         private int _anchorOffset = 0; // For selection
+        private long _documentVersion;
         private double _scrollOffsetY = 0;
         private double? _preferredCaretX = null;
         private bool _isDragging = false;
@@ -104,7 +96,9 @@ namespace Notepad.NeoEdit
         private readonly Stack<EditOp> _undoStack = new();
         private readonly Stack<EditOp> _redoStack = new();
 
-        private record EditOp(bool IsInsert, int Offset, string Text); 
+        private record EditOp(int Offset, string RemovedText, string InsertedText);
+
+        public string NewLine { get; set; } = "\r\n";
         
         public int SelectionStart
         {
@@ -131,6 +125,7 @@ namespace Notepad.NeoEdit
             _preferredCaretX = null;
             EnsureCaretVisible();
             InvalidateVisual();
+            NotifyCaretMoved();
         }
 
         public event EventHandler? TextChanged;
@@ -178,16 +173,7 @@ namespace Notepad.NeoEdit
 
             if (change.Property == TextProperty)
             {
-                // Handled in setter above, or handle here if binding OneWay
-                var newText = change.GetNewValue<string>();
-                // Only reload if the change didn't come from our own internal typing
-                // (Optimization: Check if _doc.Length matches to avoid reload loops)
-                if (_doc.Length == 0 || newText != _doc.GetTextInRange(0, _doc.Length))
-                {
-                    _doc = new PieceTreeEngine(newText ?? "");
-                    _layoutCache.Clear();
-                    InvalidateVisual();
-                }
+                ResetDocument(change.GetNewValue<string>() ?? "");
             }
             else if (change.Property == FontFamilyProperty ||
                      change.Property == LanguageProperty ||
@@ -198,17 +184,37 @@ namespace Notepad.NeoEdit
                 InvalidateVisual();
             }
         }
+        public void LoadDocument(string? text)
+        {
+            text ??= "";
+            if (text == GetValue(TextProperty))
+                ResetDocument(text);
+            else
+                SetCurrentValue(TextProperty, text);
+        }
+
+        private void ResetDocument(string text)
+        {
+            _doc = new PieceTreeEngine(text);
+            _documentVersion++;
+            _undoStack.Clear();
+            _redoStack.Clear();
+            _caretOffset = 0;
+            _anchorOffset = 0;
+            _preferredCaretX = null;
+            _layoutCache.Clear();
+            Offset = default;
+            UpdateScrollInfo();
+            CaretMoved?.Invoke(this, (1, 1));
+        }
+
         // --- Input ---
 
         protected override void OnTextInput(TextInputEventArgs e)
         {
             if (string.IsNullOrEmpty(e.Text)) return;
-            string text = e.Text.Replace("\r\n", "\n").Replace("\r", "\n");
-
-            DeleteSelection();
-            ApplyInsert(_caretOffset, text, true);
-            EnsureCaretVisible();
-            InvalidateVisual();
+            string text = e.Text.Replace("\r\n", "\n").Replace('\r', '\n');
+            InsertAtCaret(text.Replace("\n", NewLine));
         }
 
         // 2. HELPER: Auto-Detect Line Direction
@@ -249,29 +255,27 @@ namespace Notepad.NeoEdit
             // Editing
             else if (e.Key == Key.Enter)
             {
-                DeleteSelection();
-                ApplyInsert(_caretOffset, "\n", true);
+                InsertAtCaret(NewLine);
             }
             else if (e.Key == Key.Back)
             {
                 if (_caretOffset != _anchorOffset) DeleteSelection();
-                else if (_caretOffset > 0) ApplyDelete(_caretOffset - 1, 1, true);
+                else if (_caretOffset > 0)
+                {
+                    int previous = GetAdjacentOffset(-1);
+                    ReplaceRange(previous, _caretOffset - previous, "");
+                }
             }
             else if (e.Key == Key.Delete)
             {
                 if (_caretOffset != _anchorOffset) DeleteSelection();
-                else if (_caretOffset < _doc.Length) ApplyDelete(_caretOffset, 1, true);
+                else if (_caretOffset < _doc.Length)
+                    ReplaceRange(_caretOffset, GetAdjacentOffset(1) - _caretOffset, "");
             }
 
             // Commands
             else if (ctrl && e.Key == Key.Z) Undo();
             else if (ctrl && e.Key == Key.Y) Redo();
-            else if (ctrl && e.Key == Key.C) Copy();
-            else if (ctrl && e.Key == Key.V) Paste();
-            else if (ctrl && e.Key == Key.X)
-            {
-                Cut();
-            }
             else if (ctrl && e.Key == Key.A)
             {
                 SelectAll();
@@ -288,20 +292,24 @@ namespace Notepad.NeoEdit
             }
         }
 
-        public int CaretOffset { get => _caretOffset; set { _caretOffset = Math.Clamp(value, 0, _doc.Length); InvalidateVisual(); } }
+        public int CaretOffset
+        {
+            get => _caretOffset;
+            set => SetSelection(Math.Clamp(value, 0, _doc.Length), 0);
+        }
         public int LineCount => _doc.LineCount;
 
         // Helper for SearchService
         public void ReplaceRange(int start, int length, string newText)
         {
-            ApplyDelete(start, length, true);
-            ApplyInsert(start, newText, true);
-            // Ensure caret moves to end of replacement
-            _caretOffset = start + newText.Length;
-            _anchorOffset = _caretOffset;
-            EnsureCaretVisible();
-            InvalidateVisual();
-            TextChanged?.Invoke(this, EventArgs.Empty);
+            if (start < 0 || start > _doc.Length) throw new ArgumentOutOfRangeException(nameof(start));
+            if (length < 0 || length > _doc.Length - start) throw new ArgumentOutOfRangeException(nameof(length));
+            string removedText = _doc.GetTextInRange(start, length);
+            if (removedText == newText) return;
+
+            _undoStack.Push(new EditOp(start, removedText, newText));
+            _redoStack.Clear();
+            ApplyEdit(start, length, newText);
         }
         // Helper for GoToLine
         public void MoveCaretToLine(int lineIndex)
@@ -314,88 +322,51 @@ namespace Notepad.NeoEdit
         }
         // --- Logic ---
 
-        private void ApplyInsert(int offset, string text, bool record)
+        private void ApplyEdit(int offset, int length, string text)
         {
+            _doc.Delete(offset, length);
             _doc.Insert(offset, text);
+            _documentVersion++;
             _caretOffset = offset + text.Length;
             _anchorOffset = _caretOffset;
-            _preferredCaretX = null; 
+            _preferredCaretX = null;
+            _layoutCache.Clear();
             UpdateScrollInfo();
-            if (record)
-            {
-                _undoStack.Push(new EditOp(true, offset, text));
-                _redoStack.Clear();
-            }
+            EnsureCaretVisible();
+            InvalidateVisual();
+            NotifyCaretMoved();
             TextChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        private void ApplyDelete(int offset, int len, bool record)
+        private void NotifyCaretMoved()
         {
-            // Scroll Anchor Logic: if deleting above viewport, adjust scroll
-            var (line, _) = _doc.GetLineColumnFromOffset(offset);
-            double topY = _scrollOffsetY;
-            double delY = line * _lineHeight;
-
-            string deletedText = record ? _doc.GetTextInRange(offset, len) : null;
-
-            _doc.Delete(offset, len);
-            _caretOffset = offset;
-            _anchorOffset = offset;
-            _preferredCaretX = null;
-            UpdateScrollInfo();
-            if (delY < topY)
-            {
-                // Simple adjust: if we removed logic above
-                // A full implementation would calculate exact line height removed
-            }
-
-            if (record)
-            {
-                _undoStack.Push(new EditOp(false, offset, deletedText));
-                _redoStack.Clear();
-            }
-            TextChanged?.Invoke(this, EventArgs.Empty);
+            var (line, column) = _doc.GetLineColumnFromOffset(_caretOffset);
+            CaretMoved?.Invoke(this, (line + 1, column + 1));
         }
 
         public void InsertAtCaret(string text)
         {
-            DeleteSelection();
-            ApplyInsert(_caretOffset, text, true);
-            EnsureCaretVisible();
-            InvalidateVisual();
+            ReplaceRange(SelectionStart, SelectionLength, text);
         }
         public void DeleteSelection()
         {
-            if (_caretOffset == _anchorOffset) return;
-            int start = Math.Min(_caretOffset, _anchorOffset);
-            int len = Math.Abs(_caretOffset - _anchorOffset);
-            ApplyDelete(start, len, true);
+            ReplaceRange(SelectionStart, SelectionLength, "");
         }
 
         public void Undo()
         {
             if (_undoStack.Count == 0) return;
             var op = _undoStack.Pop();
-            if (op.IsInsert) _doc.Delete(op.Offset, op.Text.Length);
-            else _doc.Insert(op.Offset, op.Text);
-            _caretOffset = op.IsInsert ? op.Offset : op.Offset + op.Text.Length;
-            _anchorOffset = _caretOffset;
             _redoStack.Push(op);
-            EnsureCaretVisible();
-            InvalidateVisual();
+            ApplyEdit(op.Offset, op.InsertedText.Length, op.RemovedText);
         }
 
         public void Redo()
         {
             if (_redoStack.Count == 0) return;
             var op = _redoStack.Pop();
-            if (op.IsInsert) _doc.Insert(op.Offset, op.Text);
-            else _doc.Delete(op.Offset, op.Text.Length);
-            _caretOffset = op.IsInsert ? op.Offset + op.Text.Length : op.Offset;
-            _anchorOffset = _caretOffset;
             _undoStack.Push(op);
-            EnsureCaretVisible();
-            InvalidateVisual();
+            ApplyEdit(op.Offset, op.RemovedText.Length, op.InsertedText);
         }
 
         // --- Rendering ---
@@ -404,12 +375,6 @@ namespace Notepad.NeoEdit
         {
             context.FillRectangle(Brushes.White, new Rect(Bounds.Size));
             context.FillRectangle(Brushes.WhiteSmoke, new Rect(0, 0, GutterWidth, Bounds.Height));
-
-            if (_lastDocLength != _doc.Length)
-            {
-                _layoutCache.Clear();
-                _lastDocLength = _doc.Length;
-            }
 
             int firstLine = (int)(_scrollOffsetY / _lineHeight);
             int visibleLines = (int)(Bounds.Height / _lineHeight) + 2;
@@ -583,7 +548,7 @@ namespace Notepad.NeoEdit
 
         private void MoveCaretHorizontal(int delta, bool sel)
         {
-            _caretOffset = Math.Clamp(_caretOffset + delta, 0, _doc.Length);
+            _caretOffset = GetAdjacentOffset(delta);
             if (!sel) _anchorOffset = _caretOffset;
             _preferredCaretX = null;
             EnsureCaretVisible();
@@ -591,6 +556,18 @@ namespace Notepad.NeoEdit
 
             var (line, col) = _doc.GetLineColumnFromOffset(_caretOffset);
             CaretMoved?.Invoke(this, (line + 1, col + 1));
+        }
+
+        private int GetAdjacentOffset(int direction)
+        {
+            int offset = Math.Clamp(_caretOffset + direction, 0, _doc.Length);
+            if (offset > 0 && offset < _doc.Length)
+            {
+                string pair = _doc.GetTextInRange(offset - 1, 2);
+                if (pair == "\r\n" || char.IsSurrogatePair(pair, 0))
+                    offset += direction;
+            }
+            return offset;
         }
 
         private void MoveCaretVertical(int delta, bool sel)
@@ -745,70 +722,34 @@ namespace Notepad.NeoEdit
             // Use the Interface Property to update ScrollViewer
             this.Offset = new Vector(Offset.X, targetY);
         }
-        public void Select(int start, int length)
+        public void Select(int start, int length) => SetSelection(start, length);
+
+        public Task CutAsync() => CopySelectionAsync(removeSelection: true);
+        public Task CopyAsync() => CopySelectionAsync(removeSelection: false);
+
+        private (long Version, int Start, int Length) CurrentSelection =>
+            (_documentVersion, SelectionStart, SelectionLength);
+
+        private async Task CopySelectionAsync(bool removeSelection)
         {
-            _caretOffset = start + length;
-            _anchorOffset = start;
-            EnsureCaretVisible();
-            InvalidateVisual();
-        }
-        public void Cut()
-        {
-            Copy();
-            DeleteSelection();
-        }
-        public void Copy()
-        {
-            if (_caretOffset == _anchorOffset) return;
-            int start = Math.Min(_caretOffset, _anchorOffset);
-            int len = Math.Abs(_caretOffset - _anchorOffset);
-            string txt = _doc.GetTextInRange(start, len);
+            var selection = CurrentSelection;
             var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null) top.Clipboard.SetTextAsync(txt).ConfigureAwait(false).GetAwaiter().GetResult();//blocks the UI thread
+            if (selection.Length == 0 || top?.Clipboard is not { } clipboard) return;
+
+            await clipboard.SetTextAsync(_doc.GetTextInRange(selection.Start, selection.Length));
+            if (removeSelection && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
+                ReplaceRange(selection.Start, selection.Length, "");
         }
 
-        public void Paste()
+        public async Task PasteAsync()
         {
+            var selection = CurrentSelection;
             var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null)
-            {
-                string txt = top.Clipboard.GetTextAsync().ConfigureAwait(false).GetAwaiter().GetResult(); //blocks the UI thread
-                if (!string.IsNullOrEmpty(txt))
-                {
-                    DeleteSelection();
-                    ApplyInsert(_caretOffset, txt, true);
-                    EnsureCaretVisible();
-                    InvalidateVisual();
-                }
-            }
-        }
+            if (top?.Clipboard is not { } clipboard) return;
 
-
-        public async void CopyAsync()
-        {
-            if (_caretOffset == _anchorOffset) return;
-            int start = Math.Min(_caretOffset, _anchorOffset);
-            int len = Math.Abs(_caretOffset - _anchorOffset);
-            string txt = _doc.GetTextInRange(start, len);
-            var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null)
-                await top.Clipboard.SetTextAsync(txt); // Await safely
-        }
-
-        public async void PasteAsync()
-        {
-            var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard != null)
-            {
-                string txt = await top.Clipboard.GetTextAsync(); // Await safely
-                if (!string.IsNullOrEmpty(txt))
-                {
-                    DeleteSelection();
-                    ApplyInsert(_caretOffset, txt, true);
-                    EnsureCaretVisible();
-                    InvalidateVisual();
-                }
-            }
+            string? text = await clipboard.TryGetTextAsync();
+            if (!string.IsNullOrEmpty(text) && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
+                ReplaceRange(selection.Start, selection.Length, text);
         }
 
         public bool CanHorizontallyScroll { get; set; } = true;

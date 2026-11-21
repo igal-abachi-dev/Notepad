@@ -12,36 +12,30 @@ public class StringBuffer
     public StringBuffer(string content)
     {
         Content = new StringBuilder(content);
-        LineStarts = CreateLineStarts(content);
+        LineStarts = new List<int> { 0 };
+        AddLineStarts(content, 0);
     }
 
     public void Append(string text)
     {
         int startOffset = Content.Length;
         Content.Append(text);
-        var newLines = CreateLineStarts(text);
-        // newLines[0] is always 0, so we skip it or handle offset
-        // We append offsets relative to the start of the *chunk*, but in this simple 
-        // append-only buffer, we track absolute offsets.
-        for (int i = 1; i < newLines.Count; i++)
-        {
-            LineStarts.Add(newLines[i] + startOffset);
-        }
+        AddLineStarts(text, startOffset);
     }
 
-    private static List<int> CreateLineStarts(string str)
+    private void AddLineStarts(string text, int startOffset)
     {
-        var r = new List<int>() { 0 };
-        for (int i = 0; i < str.Length; i++)
+        for (int i = 0; i < text.Length; i++)
         {
-            char c = str[i];
-            if (c == '\r')
+            if (text[i] == '\r')
             {
-                if (i + 1 < str.Length && str[i + 1] == '\n') { r.Add(i + 2); i++; }
-                else { r.Add(i + 1); }
+                if (i + 1 < text.Length && text[i + 1] == '\n') i++;
+                LineStarts.Add(startOffset + i + 1);
             }
-            else if (c == '\n') { r.Add(i + 1); }
+            else if (text[i] == '\n')
+            {
+                LineStarts.Add(startOffset + i + 1);
+            }
         }
-        return r;
     }
 }

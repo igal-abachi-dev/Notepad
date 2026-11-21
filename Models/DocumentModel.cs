@@ -13,8 +13,8 @@ public class DocumentModel
     public bool IsUntitled { get; set; } = true;
     public bool IsModified { get; set; } = false;
     public Encoding Encoding { get; set; } = Encoding.Default;
-    public FileEncodingType EncodingType { get; set; } = FileEncodingType.ANSI;
-    public FileEncodingType SaveEncodingType { get; set; } = FileEncodingType.ANSI;
+    public FileEncodingType EncodingType { get; set; } = FileEncodingType.UTF8;
+    public FileEncodingType SaveEncodingType { get; set; } = FileEncodingType.UTF8;
     public LineEndingStyle LineEnding { get; set; } = LineEndingStyle.CRLF;
 
     public string FileName => IsUntitled

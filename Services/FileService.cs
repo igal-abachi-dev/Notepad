@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System;
 using System.Runtime.InteropServices;
+using System.Text.Unicode;
 
 namespace NotepadAvalonia.Services;
 
@@ -13,6 +14,11 @@ namespace NotepadAvalonia.Services;
 /// </summary>
 public class FileService 
 {
+    static FileService()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
     public async Task<(string content, Encoding encoding, FileEncodingType encodingType, LineEndingStyle lineEnding)> LoadFileAsync(string path)
     {
         var bytes = await File.ReadAllBytesAsync(path);
@@ -20,7 +26,7 @@ public class FileService
         var encoding = GetEncoding(encodingType);
 
         // Skip BOM if present
-        int bomLength = GetBomLength(encoding, bytes);
+        int bomLength = GetBomLength(bytes);
         var content = encoding.GetString(bytes, bomLength, bytes.Length - bomLength);
 
         var lineEnding = DetectLineEndings(content);
@@ -35,16 +41,42 @@ public class FileService
 
         var encoding = GetEncoding(encodingType);
 
-        // Get bytes with optional BOM
+        // Encode before touching the destination so unrepresentable characters fail safely.
         byte[] contentBytes = encoding.GetBytes(content);
         byte[] bomBytes = encoding.GetPreamble();
 
-        using var stream = File.Create(path);
-        if (bomBytes.Length > 0)
+        string destination = Path.GetFullPath(path);
+        if (File.Exists(destination))
+            destination = File.ResolveLinkTarget(destination, returnFinalTarget: true)?.FullName ?? destination;
+
+        string tempPath = Path.Combine(Path.GetDirectoryName(destination)!, $".notepad-{Guid.NewGuid():N}.tmp");
+        bool created = false;
+        try
         {
-            await stream.WriteAsync(bomBytes);
+            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, bufferSize: 4096, FileOptions.Asynchronous))
+            {
+                created = true;
+                await stream.WriteAsync(bomBytes);
+                await stream.WriteAsync(contentBytes);
+            }
+
+            if (File.Exists(destination))
+            {
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(tempPath, File.GetUnixFileMode(destination));
+                File.Replace(tempPath, destination, null);
+            }
+            else
+            {
+                File.Move(tempPath, destination);
+            }
+            created = false;
         }
-        await stream.WriteAsync(contentBytes);
+        finally
+        {
+            if (created) File.Delete(tempPath);
+        }
     }
 
     /// <summary>
@@ -52,8 +84,6 @@ public class FileService
     /// </summary>
     public FileEncodingType DetectEncodingType(byte[] bytes)
     {
-        if (bytes.Length < 2) return FileEncodingType.ANSI;
-
         // UTF-8 BOM: EF BB BF
         if (bytes.Length >= 3 &&
             bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
@@ -62,24 +92,23 @@ public class FileService
         }
 
         // UTF-16 LE BOM: FF FE
-        if (bytes[0] == 0xFF && bytes[1] == 0xFE)
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
         {
             return FileEncodingType.UTF16LE;
         }
 
         // UTF-16 BE BOM: FE FF  
-        if (bytes[0] == 0xFE && bytes[1] == 0xFF)
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
         {
             return FileEncodingType.UTF16BE;
         }
 
-        // Heuristic detection (like IsTextUnicode)
-        var utf16Kind = LooksLikeUtf16(bytes);
-        if (utf16Kind.HasValue) return utf16Kind.Value;
+        bool isUtf8 = Utf8.IsValid(bytes);
+        if (isUtf8 && Array.IndexOf(bytes, (byte)0) < 0) return FileEncodingType.UTF8;
+        if (bytes.Length >= 2 && bytes.Length % 2 == 0 && LooksLikeUtf16(bytes) is { } utf16Kind)
+            return utf16Kind;
 
-        if (LooksLikeUtf8(bytes)) return FileEncodingType.UTF8;
-
-        return FileEncodingType.ANSI; // ANSI
+        return isUtf8 ? FileEncodingType.UTF8 : FileEncodingType.ANSI;
     }
 
     public LineEndingStyle DetectLineEndings(string content)
@@ -118,16 +147,17 @@ public class FileService
     {
         return encodingType switch
         {
-            FileEncodingType.ANSI => Encoding.Default,
-            FileEncodingType.UTF16LE => Encoding.Unicode,              // with BOM
-            FileEncodingType.UTF16BE => Encoding.BigEndianUnicode,     // with BOM
-            FileEncodingType.UTF8BOM => new UTF8Encoding(true),
-            FileEncodingType.UTF8 => new UTF8Encoding(false),
-            _ => Encoding.Default
+            FileEncodingType.ANSI => Encoding.GetEncoding(
+                OperatingSystem.IsWindows() ? Encoding.GetEncoding(0).CodePage : 1252,
+                EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback),
+            FileEncodingType.UTF16LE => new UnicodeEncoding(false, true, true),
+            FileEncodingType.UTF16BE => new UnicodeEncoding(true, true, true),
+            FileEncodingType.UTF8BOM => new UTF8Encoding(true, true),
+            _ => new UTF8Encoding(false, true)
         };
     }
 
-    private int GetBomLength(Encoding encoding, byte[] bytes)
+    private int GetBomLength(byte[] bytes)
     {
         if (bytes.Length >= 3 &&
             bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
@@ -139,55 +169,9 @@ public class FileService
         return 0;
     }
 
-    private bool LooksLikeUtf8(byte[] bytes)
-    {
-        int i = 0;
-        while (i < bytes.Length)
-        {
-            if (bytes[i] <= 0x7F)
-            {
-                i++;
-            }
-            else if (bytes[i] >= 0xC2 && bytes[i] <= 0xDF)
-            {
-                if (i + 1 >= bytes.Length || (bytes[i + 1] & 0xC0) != 0x80)
-                    return false;
-                i += 2;
-            }
-            else if (bytes[i] >= 0xE0 && bytes[i] <= 0xEF)
-            {
-                if (i + 2 >= bytes.Length ||
-                    (bytes[i + 1] & 0xC0) != 0x80 ||
-                    (bytes[i + 2] & 0xC0) != 0x80)
-                    return false;
-                i += 3;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private FileEncodingType? LooksLikeUtf16(byte[] bytes)
     {
-        // Prefer Windows API when available for parity with core
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            int flags = 0;
-            // 0x0001 IS_TEXT_UNICODE_ASCII16 | 0x0002 REVERSE_ASCII16 | 0x0004 STATISTICS | 0x0008 REVERSE_STATISTICS
-            flags = 0x0001 | 0x0002 | 0x0004 | 0x0008;
-            bool isUnicode = IsTextUnicode(bytes, bytes.Length, ref flags);
-            if (isUnicode)
-            {
-                // Flags mirroring IS_TEXT_UNICODE_REVERSE_MASK vs UNICODE_MASK
-                if ((flags & 0x0002) == 0x0002) return FileEncodingType.UTF16BE;
-                return FileEncodingType.UTF16LE;
-            }
-        }
-
-        // Fallback heuristic: look for 0x00 bytes in expected positions
+        // Check byte alignment first so BE text with NULs is recognized on all platforms.
         int evenZeros = 0, oddZeros = 0, count = Math.Min(bytes.Length, 4096);
         for (int i = 0; i + 1 < count; i += 2)
         {
@@ -199,8 +183,20 @@ public class FileService
         if (pairs == 0) return null;
 
         // If almost all even bytes are 0, likely BE; if almost all odd bytes are 0, likely LE
-        if (oddZeros > pairs * 0.6) return FileEncodingType.UTF16LE;
-        if (evenZeros > pairs * 0.6) return FileEncodingType.UTF16BE;
+        if (oddZeros > evenZeros && oddZeros > pairs * 0.6) return FileEncodingType.UTF16LE;
+        if (evenZeros > oddZeros && evenZeros > pairs * 0.6) return FileEncodingType.UTF16BE;
+
+        if (OperatingSystem.IsWindows())
+        {
+            const int littleEndianTests = 0x0001 | 0x0002;
+            const int bigEndianTests = 0x0010 | 0x0020;
+            int flags = littleEndianTests | bigEndianTests;
+            IsTextUnicode(bytes, bytes.Length, ref flags);
+            if ((flags & littleEndianTests) != 0 && (flags & bigEndianTests) == 0)
+                return FileEncodingType.UTF16LE;
+            if ((flags & bigEndianTests) != 0 && (flags & littleEndianTests) == 0)
+                return FileEncodingType.UTF16BE;
+        }
 
         return null;
     }

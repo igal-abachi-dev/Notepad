@@ -1,12 +1,13 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NotepadAvalonia.ViewModels"
         x:Class="NotepadAvalonia.Views.FindReplaceDialog"
+        x:DataType="vm:FindReplaceViewModel"
         Width="420"
         Height="260"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
-        Title="{Binding Title}"
-        x:CompileBindings="False">
+        Title="{Binding Title}">
   <StackPanel Margin="12" Spacing="10">
     <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" Margin="0,0,0,6">
       <TextBlock Text="_Find what:" Margin="0,0,10,6" VerticalAlignment="Center" />

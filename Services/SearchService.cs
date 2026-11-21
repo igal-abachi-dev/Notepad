@@ -1,16 +1,19 @@
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using System;
+using System.Diagnostics;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace NotepadAvalonia.Services;
 
 /// <summary>
 /// Maps to: function_14001cfac (find logic)
-/// Uses AvaloniaEdit's document model
 /// </summary>
 public class SearchService
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(500);
+
     public (SearchResult? result, bool wrapped) FindNext(NeoEditor editor, SearchSettings settings)
     {
         return Find(editor, settings, forward: true);
@@ -28,57 +31,31 @@ public class SearchService
 
         if (string.IsNullOrEmpty(searchText)) return (null, false);
 
-        int startPos = forward ? editor.CaretOffset : Math.Max(0, editor.CaretOffset - 1);
+        int boundary = forward
+            ? editor.SelectionStart + editor.SelectionLength
+            : editor.SelectionStart;
 
         bool wrapped = false;
 
         if (settings.UseRegex)
         {
-            var options = settings.MatchCase
-                ? RegexOptions.None
-                : RegexOptions.IgnoreCase;
-            var regex = new Regex(searchText, options);
-
-            if (forward)
+            var regex = CreateRegex(settings);
+            var match = FindRegex(regex, text, boundary, forward, settings.WholeWord);
+            if (match == null && settings.WrapAround && text.Length > 0)
             {
-                var match = regex.Match(text, startPos);
-                if (settings.WrapAround && !match.Success && text.Length > 0)
-                {
-                    wrapped = true;
-                    match = regex.Match(text, 0);
-                }
-                if (match.Success) return (new SearchResult(match.Index, match.Length), wrapped);
+                wrapped = true;
+                match = FindRegex(regex, text, forward ? 0 : text.Length, forward, settings.WholeWord);
             }
-            else
-            {
-                var matches = regex.Matches(text[..Math.Min(startPos, text.Length)]);
-                if (matches.Count > 0)
-                {
-                    var last = matches[^1];
-                    return (new SearchResult(last.Index, last.Length), wrapped);
-                }
-                if (settings.WrapAround && text.Length > 0)
-                {
-                    wrapped = true;
-                    matches = regex.Matches(text);
-                    if (matches.Count > 0)
-                    {
-                        var last = matches[^1];
-                        return (new SearchResult(last.Index, last.Length), wrapped);
-                    }
-                }
-            }
+            return (match == null ? null : new SearchResult(match.Index, match.Length), wrapped);
         }
         else
         {
-            var comparison = settings.MatchCase
-                ? StringComparison.Ordinal
-                : StringComparison.OrdinalIgnoreCase;
+            var comparison = GetComparison(settings);
             int foundPos;
 
             if (forward)
             {
-                foundPos = FindForward(text, searchText, startPos, comparison, settings.WholeWord);
+                foundPos = FindForward(text, searchText, boundary, comparison, settings.WholeWord);
                 if (foundPos == -1 && settings.WrapAround && text.Length > 0)
                 {
                     wrapped = true;
@@ -87,7 +64,7 @@ public class SearchService
             }
             else
             {
-                foundPos = FindBackward(text, searchText, startPos, comparison, settings.WholeWord);
+                foundPos = FindBackward(text, searchText, boundary - 1, comparison, settings.WholeWord);
                 if (foundPos == -1 && settings.WrapAround && text.Length > 0)
                 {
                     wrapped = true;
@@ -104,16 +81,52 @@ public class SearchService
 
     public int ReplaceNext(NeoEditor editor, SearchSettings settings)
     {
-        var (result, _) = FindNext(editor, settings);
-        if (result != null)
+        string searchText = settings.SearchString;
+        if (string.IsNullOrEmpty(searchText)) return 0;
+
+        string text = editor.GetText();
+        int selectionStart = editor.SelectionStart;
+        int selectionLength = editor.SelectionLength;
+        int nextOffset = selectionStart + selectionLength;
+
+        if (settings.UseRegex)
         {
-            editor.ReplaceRange(result.StartOffset, result.Length, settings.ReplaceString);
+            var regex = CreateRegex(settings);
+            Match? match = null;
+            if (selectionLength > 0)
+            {
+                var selectedMatch = regex.Match(text, selectionStart);
+                if (selectedMatch.Success && selectedMatch.Index == selectionStart &&
+                    selectedMatch.Length == selectionLength &&
+                    (!settings.WholeWord || IsWholeWordMatch(text, selectionStart, selectionLength)))
+                {
+                    match = selectedMatch;
+                }
+            }
+
+            match ??= FindRegex(regex, text, nextOffset, forward: true, settings.WholeWord);
+            if (match == null && settings.WrapAround && nextOffset > 0)
+                match = FindRegex(regex, text, 0, forward: true, settings.WholeWord);
+            if (match == null) return 0;
+
+            editor.ReplaceRange(match.Index, match.Length, match.Result(settings.ReplaceString));
             return 1;
         }
-        return 0;
+
+        var comparison = GetComparison(settings);
+        bool selectionMatches = selectionLength == searchText.Length &&
+            text.AsSpan(selectionStart, selectionLength).Equals(searchText.AsSpan(), comparison) &&
+            (!settings.WholeWord || IsWholeWordMatch(text, selectionStart, selectionLength));
+        int index = selectionMatches
+            ? selectionStart
+            : FindForward(text, searchText, nextOffset, comparison, settings.WholeWord);
+        if (index < 0 && settings.WrapAround && nextOffset > 0)
+            index = FindForward(text, searchText, 0, comparison, settings.WholeWord);
+        if (index < 0) return 0;
+
+        editor.ReplaceRange(index, searchText.Length, settings.ReplaceString);
+        return 1;
     }
-
-
 
     public int ReplaceAll(NeoEditor editor, SearchSettings settings)
     {
@@ -125,36 +138,71 @@ public class SearchService
 
         if (settings.UseRegex)
         {
-            var options = settings.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
-            var regex = new Regex(settings.SearchString, options);
-            count = regex.Matches(text).Count;
-            newText = regex.Replace(text, settings.ReplaceString);
+            var regex = CreateRegex(settings);
+            newText = regex.Replace(text, match =>
+            {
+                if (settings.WholeWord && !IsWholeWordMatch(text, match.Index, match.Length))
+                    return match.Value;
+
+                count++;
+                return match.Result(settings.ReplaceString);
+            });
         }
         else
         {
-            // Simple replace all
-            if (settings.MatchCase)
+            var comparison = GetComparison(settings);
+            int start = 0;
+            var builder = new StringBuilder();
+            int match;
+            while ((match = FindForward(text, settings.SearchString, start, comparison, settings.WholeWord)) >= 0)
             {
-                count = (text.Length - text.Replace(settings.SearchString, "").Length) / settings.SearchString.Length;
-                newText = text.Replace(settings.SearchString, settings.ReplaceString);
+                builder.Append(text, start, match - start);
+                builder.Append(settings.ReplaceString);
+                start = match + settings.SearchString.Length;
+                count++;
             }
-            else
-            {
-                // Case-insensitive replace is trickier, standard Replace(str, str) is case sensitive
-                // Using Regex for convenience here
-                var regex = new Regex(Regex.Escape(settings.SearchString), RegexOptions.IgnoreCase);
-                count = regex.Matches(text).Count;
-                newText = regex.Replace(text, settings.ReplaceString);
-            }
+            if (count == 0) return 0;
+
+            builder.Append(text, start, text.Length - start);
+            newText = builder.ToString();
         }
 
-        if (count > 0)
+        if (count > 0 && newText != text)
         {
-            editor.Text = newText; // Triggers full reload, safest for ReplaceAll
+            int caret = editor.CaretOffset;
+            editor.ReplaceRange(0, text.Length, newText);
+            editor.SetSelection(Math.Min(caret, newText.Length), 0);
         }
         return count;
     }
 
+    private static Regex CreateRegex(SearchSettings settings) =>
+        new(settings.SearchString, settings.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase, RegexTimeout);
+
+    private static StringComparison GetComparison(SearchSettings settings) =>
+        settings.MatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+    private Match? FindRegex(Regex regex, string text, int boundary, bool forward, bool wholeWord)
+    {
+        if (!forward && boundary == 0) return null;
+
+        long started = Stopwatch.GetTimestamp();
+        Match? last = null;
+        for (var match = regex.Match(text, forward ? boundary : 0); match.Success; match = match.NextMatch())
+        {
+            // The regex timeout applies to each match. Also bound a scan across many matches.
+            if (Stopwatch.GetElapsedTime(started) >= RegexTimeout)
+                throw new RegexMatchTimeoutException(text, regex.ToString(), RegexTimeout);
+
+            if (!forward && (match.Index >= boundary || match.Length > boundary - match.Index))
+                break;
+            if (wholeWord && !IsWholeWordMatch(text, match.Index, match.Length))
+                continue;
+            if (forward) return match;
+            last = match;
+        }
+        return last;
+    }
 
     private int FindForward(string text, string searchText, int startPos, StringComparison comparison, bool wholeWord)
     {
@@ -167,7 +215,7 @@ public class SearchService
             {
                 return index;
             }
-            index += searchText.Length;
+            index++;
         }
 
         return -1;

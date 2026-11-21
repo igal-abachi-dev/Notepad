@@ -23,8 +23,6 @@ public partial class MainWindow : Window
         // Wire up editor events
         if (_editor != null)
         {
-            _editor.CaretMoved += OnCaretMoved;
-
             // Give ViewModel access to editor for commands
             TryAttachEditorToViewModel();
             Opened += (_, _) => _editor?.Focus();
@@ -56,10 +54,6 @@ public partial class MainWindow : Window
         {
             Position = new PixelPoint(vm.Settings.WindowX, vm.Settings.WindowY);
         }
-    }
-    private void OnCaretMoved(object? sender, (int Line, int Column) e)
-    {
-        ViewModel?.UpdateCaretPosition(e.Line, e.Column);
     }
 
     private async void OnDrop(object? sender, DragEventArgs e)

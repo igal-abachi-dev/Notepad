@@ -1,3 +1,4 @@
+using System.IO;
 using System.Linq;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
@@ -11,7 +12,7 @@ public class PrintServiceTests
     public void Paginate_IncludesHeaderFooterTokens()
     {
         var service = new PrintService();
-        var doc = new DocumentModel { FilePath = @"C:\test\file.txt", IsUntitled = false };
+        var doc = new DocumentModel { FilePath = Path.Combine("test", "file.txt"), IsUntitled = false };
         var setup = new PageSetupSettings
         {
             Header = "&f - &p",
@@ -32,9 +33,10 @@ public class PrintServiceTests
         var doc = new DocumentModel();
         var setup = new PageSetupSettings();
 
-        var text = string.Join("\n", Enumerable.Repeat("0123456789", 30)); // 30 lines
-        var pages = service.Paginate(text, doc, setup, charsPerLine: 5, linesPerPage: 6);
+        var text = string.Join("\n", Enumerable.Repeat("0123456789abcdefghij", 3));
+        var pages = service.Paginate(text, doc, setup, charsPerLine: 10, linesPerPage: 6);
 
-        Assert.True(pages.Count > 1);
+        Assert.Equal(2, pages.Count);
+        Assert.Contains("0123456789\nabcdefghij", pages[0]);
     }
 }

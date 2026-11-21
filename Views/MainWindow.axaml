@@ -171,7 +171,6 @@
                       VerticalScrollBarVisibility="Visible">
         <neoEdit:NeoEditor Name="Editor"
                          MinHeight="300" MinWidth="300"
-                         Text="{Binding FileContent, Mode=OneWay}"
                          Language="{Binding CurrentLanguage}"
                          FontFamily="{Binding Settings.FontFamily}"
                          FontSize="{Binding EditorFontSize}"

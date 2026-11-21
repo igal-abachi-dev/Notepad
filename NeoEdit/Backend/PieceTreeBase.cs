@@ -61,48 +61,53 @@ namespace Notepad.NeoEdit.Backend
             if (string.IsNullOrEmpty(text)) return;
             if (offset < 0 || offset > _cachedLength) throw new ArgumentOutOfRangeException(nameof(offset));
 
+            InsertCore(offset, text);
+            if (text[0] == '\n') JoinCrLfAt(offset);
+            if (text[^1] == '\r') JoinCrLfAt(offset + text.Length);
+        }
+
+        private void InsertCore(int offset, string text)
+        {
             var addBuffer = _buffers[0];
             int startOffset = addBuffer.Content.Length;
+            int startLine = addBuffer.LineStarts.Count - 1;
+            var start = new BufferCursor(startLine, startOffset - addBuffer.LineStarts[startLine]);
+            bool splitCrLf = text[0] == '\n' && startOffset > 0 && addBuffer.Content[startOffset - 1] == '\r';
+
             addBuffer.Append(text);
+            int endLine = addBuffer.LineStarts.Count - 1;
+            var end = new BufferCursor(endLine, addBuffer.Content.Length - addBuffer.LineStarts[endLine]);
+            int lfCnt = endLine - startLine;
 
-            var lineStarts = new StringBuffer(text).LineStarts; // Helper usage to get stats
-            int lfCnt = lineStarts.Count - 1;
-            int endCol = text.Length - lineStarts[lfCnt];
-
-            int startLine = GetLineIndex(addBuffer, startOffset);
-            int startCol = startOffset - addBuffer.LineStarts[startLine];
-
-            var newPiece = new Piece(0,
-                new BufferCursor(startLine, startCol),
-                new BufferCursor(GetLineIndex(addBuffer, startOffset + text.Length), endCol),
-                lfCnt, text.Length
-            );
-
-            if (Root == Sentinel)
+            if (offset == 0)
             {
-                Root = new TreeNode(newPiece, NodeColor.Black);
+                var newPiece = new Piece(0, start, end, lfCnt, text.Length);
+                if (Root == Sentinel)
+                    Root = new TreeNode(newPiece, NodeColor.Black);
+                else
+                    RBInsertLeft(Leftest(Root), newPiece);
             }
             else
             {
-                var pos = NodeAt(offset);
-                // Handle Append case where offset == Length
-                if (offset == _cachedLength)
+                var previous = NodeAt(offset - 1);
+                var node = previous.Node;
+                var piece = node.Piece;
+                bool atPieceEnd = previous.Remainder + 1 == piece.Length;
+                if (atPieceEnd && !splitCrLf && piece.BufferIndex == 0 &&
+                    piece.End.Line == start.Line && piece.End.Column == start.Column)
                 {
-                    // If tree is not empty, insert after right-most
-                    if (Root != Sentinel) RBInsertRight(Righttest(Root), newPiece);
-                    else Root = new TreeNode(newPiece, NodeColor.Black);
-                }
-                else if (pos.StartOffset == offset)
-                {
-                    RBInsertLeft(pos.Node, newPiece);
-                }
-                else if (pos.StartOffset + pos.Node.Piece.Length > offset)
-                {
-                    SplitNode(pos.Node, offset - pos.StartOffset, newPiece);
+                    // Adjacent edits can share a piece when their text is also contiguous in the add buffer.
+                    node.Piece = new Piece(0, piece.Start, end, piece.LineFeedCount + lfCnt,
+                        piece.Length + text.Length);
+                    UpdateTreeMetadata(node, text.Length, lfCnt);
                 }
                 else
                 {
-                    RBInsertRight(pos.Node, newPiece);
+                    var newPiece = new Piece(0, start, end, lfCnt, text.Length);
+                    if (atPieceEnd)
+                        RBInsertRight(node, newPiece);
+                    else
+                        lfCnt += SplitNode(node, previous.Remainder + 1, newPiece);
                 }
             }
 
@@ -113,8 +118,15 @@ namespace Notepad.NeoEdit.Backend
         public void Delete(int offset, int cnt)
         {
             if (cnt <= 0) return;
-            if (offset < 0 || offset + cnt > _cachedLength) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (offset < 0 || offset > _cachedLength - cnt)
+                throw new ArgumentOutOfRangeException(nameof(offset));
 
+            DeleteCore(offset, cnt);
+            JoinCrLfAt(offset);
+        }
+
+        private void DeleteCore(int offset, int cnt)
+        {
             var startPos = NodeAt(offset);
             var endPos = NodeAt(offset + cnt);
 
@@ -148,6 +160,17 @@ namespace Notepad.NeoEdit.Backend
 
             _cachedLength -= cnt;
             _cachedLineCount += lfDelta;
+        }
+
+        private void JoinCrLfAt(int offset)
+        {
+            if (offset <= 0 || offset >= _cachedLength) return;
+            if (NodeAt(offset - 1).Node == NodeAt(offset).Node) return;
+            if (GetTextInRange(offset - 1, 2) != "\r\n") return;
+
+            // Keep CRLF in one piece so subtree line counts remain additive.
+            DeleteCore(offset - 1, 2);
+            InsertCore(offset - 1, "\r\n");
         }
 
         // --- Lookups ---
@@ -268,7 +291,7 @@ namespace Notepad.NeoEdit.Backend
             return new NodePosition { Node = Sentinel, StartOffset = 0, Remainder = 0 };
         }
 
-        private void SplitNode(TreeNode node, int offsetInNode, Piece newPiece)
+        private int SplitNode(TreeNode node, int offsetInNode, Piece newPiece)
         {
             Piece original = node.Piece;
             BufferCursor splitPos = GetBufferCursorFromOffset(original.BufferIndex, original.Start, offsetInNode);
@@ -284,6 +307,7 @@ namespace Notepad.NeoEdit.Backend
 
             TreeNode newNode = RBInsertRight(node, newPiece);
             if (rightPiece.Length > 0) RBInsertRight(newNode, rightPiece);
+            return leftLF + rightLF - originalLF;
         }
 
         private int ShrinkNode(TreeNode node, int startLocal, int endLocal)
@@ -296,7 +320,6 @@ namespace Notepad.NeoEdit.Backend
 
             int leftLF = GetLineFeedCnt(p.BufferIndex, p.Start, startCursor);
             int rightLF = GetLineFeedCnt(p.BufferIndex, endCursor, p.End);
-            int deletedLF = GetLineFeedCnt(p.BufferIndex, startCursor, endCursor);
 
             node.Piece = new Piece(p.BufferIndex, p.Start, startCursor, leftLF, startLocal);
             UpdateTreeMetadata(node, node.Piece.Length - p.Length, node.Piece.LineFeedCount - originalLF);
@@ -306,7 +329,7 @@ namespace Notepad.NeoEdit.Backend
                 var rightPiece = new Piece(p.BufferIndex, endCursor, p.End, rightLF, p.Length - endLocal);
                 RBInsertRight(node, rightPiece);
             }
-            return -deletedLF;
+            return leftLF + rightLF - originalLF;
         }
 
         private int DeleteNodeTail(TreeNode node, int posLocal)
@@ -372,50 +395,44 @@ namespace Notepad.NeoEdit.Backend
 
         private void RBDelete(TreeNode z)
         {
-            Piece removed = z.Piece;
-            TreeNode y = (z.Left == Sentinel || z.Right == Sentinel) ? z : Leftest(z.Right);
-            TreeNode x = (y.Left != Sentinel) ? y.Left : y.Right;
+            TreeNode successor = z.Left == Sentinel || z.Right == Sentinel ? z : Leftest(z.Right);
+            TreeNode child = successor.Left != Sentinel ? successor.Left : successor.Right;
+            var removedColor = successor.Color;
+            var childParent = successor.Parent;
 
-            bool xIsSentinel = (x == Sentinel);
-            if (xIsSentinel) Sentinel.Parent = y.Parent;
+            UpdateTreeMetadata(successor, -successor.Piece.Length, -successor.Piece.LineFeedCount);
+            ReplaceNode(successor, child);
 
-            if (y == z)
+            if (successor != z)
             {
-                UpdateTreeMetadata(y, -removed.Length, -removed.LineFeedCount);
+                // Move the successor itself. Range deletion may still hold a reference to it.
+                UpdateTreeMetadata(z, successor.Piece.Length - z.Piece.Length,
+                    successor.Piece.LineFeedCount - z.Piece.LineFeedCount);
+                ReplaceNode(z, successor);
+                successor.Left = z.Left;
+                successor.Left.Parent = successor;
+                successor.Right = z.Right;
+                if (successor.Right != Sentinel) successor.Right.Parent = successor;
+                successor.SizeLeft = z.SizeLeft;
+                successor.LFLeft = z.LFLeft;
+                successor.Color = z.Color;
+                if (childParent == z) childParent = successor;
             }
-            else
-            {
-                UpdateTreeMetadataUntil(y, z, -y.Piece.Length, -y.Piece.LineFeedCount);
-                UpdateTreeMetadata(z, -removed.Length, -removed.LineFeedCount);
-                z.Piece = y.Piece;
-            }
 
-            if (y.Parent == Sentinel) Root = x;
-            else if (y == y.Parent.Left) y.Parent.Left = x;
-            else y.Parent.Right = x;
+            if (removedColor == NodeColor.Black) RBDeleteFixup(child, childParent);
+        }
 
-            if (!xIsSentinel) x.Parent = y.Parent;
-
-            if (y.Color == NodeColor.Black) RBDeleteFixup(x);
-            if (xIsSentinel) Sentinel.Parent = Sentinel;
+        private void ReplaceNode(TreeNode node, TreeNode replacement)
+        {
+            if (node.Parent == Sentinel) Root = replacement;
+            else if (node.Parent.Left == node) node.Parent.Left = replacement;
+            else node.Parent.Right = replacement;
+            if (replacement != Sentinel) replacement.Parent = node.Parent;
         }
 
         private void UpdateTreeMetadata(TreeNode x, int sizeDelta, int lfDelta)
         {
             while (x != Root && x != Sentinel)
-            {
-                if (x.Parent.Left == x)
-                {
-                    x.Parent.SizeLeft += sizeDelta;
-                    x.Parent.LFLeft += lfDelta;
-                }
-                x = x.Parent;
-            }
-        }
-
-        private void UpdateTreeMetadataUntil(TreeNode x, TreeNode end, int sizeDelta, int lfDelta)
-        {
-            while (x != end && x != Sentinel)
             {
                 if (x.Parent.Left == x)
                 {
@@ -471,24 +488,25 @@ namespace Notepad.NeoEdit.Backend
             Root.Color = NodeColor.Black;
         }
 
-        private void RBDeleteFixup(TreeNode x)
+        private void RBDeleteFixup(TreeNode x, TreeNode parent)
         {
             while (x != Root && x.Color == NodeColor.Black)
             {
-                if (x == x.Parent.Left)
+                if (x == parent.Left)
                 {
-                    TreeNode w = x.Parent.Right;
+                    TreeNode w = parent.Right;
                     if (w.Color == NodeColor.Red)
                     {
                         w.Color = NodeColor.Black;
-                        x.Parent.Color = NodeColor.Red;
-                        LeftRotate(x.Parent);
-                        w = x.Parent.Right;
+                        parent.Color = NodeColor.Red;
+                        LeftRotate(parent);
+                        w = parent.Right;
                     }
                     if (w.Left.Color == NodeColor.Black && w.Right.Color == NodeColor.Black)
                     {
                         w.Color = NodeColor.Red;
-                        x = x.Parent;
+                        x = parent;
+                        parent = x.Parent;
                     }
                     else
                     {
@@ -497,29 +515,30 @@ namespace Notepad.NeoEdit.Backend
                             w.Left.Color = NodeColor.Black;
                             w.Color = NodeColor.Red;
                             RightRotate(w);
-                            w = x.Parent.Right;
+                            w = parent.Right;
                         }
-                        w.Color = x.Parent.Color;
-                        x.Parent.Color = NodeColor.Black;
+                        w.Color = parent.Color;
+                        parent.Color = NodeColor.Black;
                         w.Right.Color = NodeColor.Black;
-                        LeftRotate(x.Parent);
+                        LeftRotate(parent);
                         x = Root;
                     }
                 }
                 else
                 {
-                    TreeNode w = x.Parent.Left;
+                    TreeNode w = parent.Left;
                     if (w.Color == NodeColor.Red)
                     {
                         w.Color = NodeColor.Black;
-                        x.Parent.Color = NodeColor.Red;
-                        RightRotate(x.Parent);
-                        w = x.Parent.Left;
+                        parent.Color = NodeColor.Red;
+                        RightRotate(parent);
+                        w = parent.Left;
                     }
                     if (w.Right.Color == NodeColor.Black && w.Left.Color == NodeColor.Black)
                     {
                         w.Color = NodeColor.Red;
-                        x = x.Parent;
+                        x = parent;
+                        parent = x.Parent;
                     }
                     else
                     {
@@ -528,12 +547,12 @@ namespace Notepad.NeoEdit.Backend
                             w.Right.Color = NodeColor.Black;
                             w.Color = NodeColor.Red;
                             LeftRotate(w);
-                            w = x.Parent.Left;
+                            w = parent.Left;
                         }
-                        w.Color = x.Parent.Color;
-                        x.Parent.Color = NodeColor.Black;
+                        w.Color = parent.Color;
+                        parent.Color = NodeColor.Black;
                         w.Left.Color = NodeColor.Black;
-                        RightRotate(x.Parent);
+                        RightRotate(parent);
                         x = Root;
                     }
                 }
@@ -590,17 +609,16 @@ namespace Notepad.NeoEdit.Backend
 
         private int GetLineFeedCnt(int bufferIndex, BufferCursor start, BufferCursor end)
         {
-            if (start.Line == end.Line)
-            {
-                var buffer = _buffers[bufferIndex];
-                int endAbs = buffer.LineStarts[end.Line] + end.Column;
-                // If we split right between \r and \n, we must count it as a LF to preserve structure
-                if (endAbs > 0 && endAbs < buffer.Content.Length &&
-                    buffer.Content[endAbs] == '\n' && buffer.Content[endAbs - 1] == '\r')
-                    return 1;
-                return 0;
-            }
-            return end.Line - start.Line;
+            int count = end.Line - start.Line;
+            if (end.Column == 0 || (count == 0 && start.Column == end.Column)) return count;
+
+            var buffer = _buffers[bufferIndex];
+            int endAbs = buffer.LineStarts[end.Line] + end.Column;
+            // A piece ending between CR and LF contains a standalone CR.
+            if (endAbs < buffer.Content.Length &&
+                buffer.Content[endAbs - 1] == '\r' && buffer.Content[endAbs] == '\n')
+                count++;
+            return count;
         }
 
         private int GetOffsetAtLine(int lineNumber)
@@ -623,7 +641,7 @@ namespace Notepad.NeoEdit.Backend
                     int targetLineIdx = startLine + relativeLF + 1;
                     int absOffset = buf.LineStarts[targetLineIdx];
                     int pieceStartAbs = buf.LineStarts[startLine] + x.Piece.Start.Column;
-                    return offset + (absOffset - pieceStartAbs);
+                    return offset + Math.Min(absOffset - pieceStartAbs, x.Piece.Length);
                 }
                 else
                 {
