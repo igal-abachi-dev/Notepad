@@ -9,13 +9,20 @@ if errorlevel 1 (
 set "PUBLISH=bin\Release\net9.0\win-x64\publish"
 echo Published %PUBLISH%\Notepad.exe
 if /i "%~1"=="--verify" (
-    start "" /wait "%PUBLISH%\Notepad.exe" --verify-release "%CD%\%PUBLISH%\release-smoke.log"
+    if not exist "%CD%\obj\release-smoke" mkdir "%CD%\obj\release-smoke"
+    call :verify
     if errorlevel 1 (
-        if exist "%PUBLISH%\release-smoke.log" type "%PUBLISH%\release-smoke.log"
         popd
         exit /b 1
     )
-    type "%PUBLISH%\release-smoke.log"
 )
 popd
 exit /b 0
+
+:verify
+set "SMOKE=%CD%\obj\release-smoke\smoke-%RANDOM%-%RANDOM%.log"
+start "" /wait "%PUBLISH%\Notepad.exe" --verify-release "%SMOKE%"
+set "RESULT=%ERRORLEVEL%"
+if not exist "%SMOKE%" exit /b 1
+type "%SMOKE%"
+exit /b %RESULT%

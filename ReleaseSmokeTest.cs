@@ -6,6 +6,7 @@ using Avalonia.VisualTree;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Views;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -35,6 +36,12 @@ internal static class ReleaseSmokeTest
     {
         var vm = window.ViewModel;
         Require(vm.EditorControl?.IsFocused == true && vm.EditorControl.TextLength == 0, "The blank editor has focus.");
+        using var process = Process.GetCurrentProcess();
+        double focusedMiB = process.WorkingSet64 / (1024.0 * 1024);
+        vm.SetThemeCommand.Execute(EditorTheme.Dark);
+        Require(window.ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark, "Dark theme applied to the window.");
+        vm.SetThemeCommand.Execute(EditorTheme.Light);
+        Require(window.ActualThemeVariant == Avalonia.Styling.ThemeVariant.Light, "Light theme applied to the window.");
         var selectEncoding = vm.ChangeDefaultEncodingCommand.ExecuteAsync(null);
         var encodingDialog = await WaitForDialog<EncodingDialog>(window);
         var options = encodingDialog.FindControl<ComboBox>("EncodingCombo")!;
@@ -65,7 +72,8 @@ internal static class ReleaseSmokeTest
             label.Text?.StartsWith("Cannot open ", StringComparison.Ordinal) == true), "File error dialog displays its message.");
         Accept(message);
         Require(!await missing.WaitAsync(TimeSpan.FromSeconds(5)), "File error did not replace the open document.");
-        return "Native AOT smoke passed: blank startup, Encoding, Go To Line validation and navigation, file error dialog.";
+        return "Native AOT smoke passed: blank startup, themes, Encoding, Go To Line validation and navigation, file error dialog." +
+            Environment.NewLine + $"First focused blank window: {focusedMiB:F1} MiB working set.";
     }
 
     private static async Task<T> WaitForDialog<T>(Window owner) where T : Window

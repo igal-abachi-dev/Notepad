@@ -17,6 +17,53 @@ namespace Notepad.Tests;
 public class EditorWorkloadTests(ITestOutputHelper output)
 {
     [AvaloniaFact]
+    public async Task LogOf32MiB_KeepsLineOffsetsWrappingAndSaveCorrect()
+    {
+        const int rows = 131_072;
+        string row = new string('x', 254) + "\r\n";
+        string block = string.Concat(Enumerable.Repeat(row, 512));
+        var folder = Directory.CreateTempSubdirectory("notepad-large-log-");
+        var window = new Window { Width = 560, Height = 360 };
+        var editor = new NeoEditor();
+        window.Content = editor;
+        try
+        {
+            var path = Path.Combine(folder.FullName, "large.log");
+            await using (var writer = new StreamWriter(path))
+                for (int offset = 0; offset < rows; offset += 512)
+                    await writer.WriteAsync(block);
+
+            var files = new FileService();
+            var timer = Stopwatch.StartNew();
+            var loaded = await files.ReadDocumentAsync(path);
+            editor.LoadDocument(loaded.Content);
+            output.WriteLine($"Open 32 MiB log: {timer.Elapsed.TotalMilliseconds:F1} ms");
+            Assert.Equal(rows + 1, editor.LineCount);
+            window.Show();
+            window.UpdateLayout();
+            timer.Restart();
+            editor.WordWrap = true;
+            editor.MoveCaretToLine(rows - 1);
+            Assert.Equal((rows - 1) * row.Length, editor.CaretOffset);
+            output.WriteLine($"Enable wrap and navigate to the last populated line: {timer.Elapsed.TotalMilliseconds:F1} ms");
+
+            editor.InsertAtCaret("end");
+            string saved = editor.Text;
+            timer.Restart();
+            await files.CommitFileAsync(path, saved, loaded.EncodingType, loaded.LineEnding, loaded.Version);
+            output.WriteLine($"Guarded staged save of 32 MiB: {timer.Elapsed.TotalMilliseconds:F1} ms");
+            Assert.Equal(rows * row.Length + 3, new FileInfo(path).Length);
+            editor.Undo();
+            Assert.Equal(loaded.Content, editor.Text);
+        }
+        finally
+        {
+            window.Close();
+            folder.Delete(recursive: true);
+        }
+    }
+
+    [AvaloniaFact]
     public async Task LargeDocument_SnapshotsSearchEditsAndScrollStayConsistent()
     {
         string line = "sample event with a long value ".PadRight(160, 'x');
