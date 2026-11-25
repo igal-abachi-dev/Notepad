@@ -89,23 +89,8 @@ public partial class MainWindowViewModel
 
     internal async Task<bool> ConfirmWindowCloseAsync()
     {
-        if (_draftStore == null) return await CheckSaveChangesAsync();
-        if (_savePickerPending || _saveDecisionPending) return false;
-        while (_saveIdle is { } idle)
-            await idle.Task;
-        if (!Document.IsModified)
-        {
-            await ReleaseDocumentDraftAsync(Document, discard: true);
-            return true;
-        }
-        while (Document.IsModified)
-        {
-            var editor = EditorControl;
-            long? revision = editor?.DocumentVersion;
-            if (!await CheckpointDraftAsync(force: true))
-                return await CheckSaveChangesAsync(discardDraft: true);
-            if (EditorControl == editor && editor?.DocumentVersion == revision) return true;
-        }
+        if (!await CheckSaveChangesAsync(discardDraft: true)) return false;
+        if (!Document.IsModified) await ReleaseDocumentDraftAsync(Document, discard: true);
         return true;
     }
 
@@ -155,6 +140,11 @@ public partial class MainWindowViewModel
 
     internal async Task<bool> RecoverDraftAsync(Guid id)
     {
+        if (!Document.IsUntitled || Document.IsModified || EditorControl?.TextLength > 0)
+        {
+            if (OwnerWindow == null) return false;
+            return await LaunchNewProcessAsync("--recover-draft", id.ToString("N"));
+        }
         if (_draftStore?.TryClaim(id) is not { } lease) return false;
         bool accepted = false;
         try
@@ -162,23 +152,33 @@ public partial class MainWindowViewModel
             var snapshot = await Task.Run(lease.Read);
             if (snapshot == null) return false;
 
+            // Typing during the disk read must also leave the current document alone.
             if (!Document.IsUntitled || Document.IsModified || EditorControl?.TextLength > 0)
             {
                 if (OwnerWindow == null) return false;
-                var viewModel = new MainWindowViewModel(_fileService, new SearchService(), _settingsService,
-                    _printService, _timeProvider, _draftStore);
-                viewModel.ApplyDraft(snapshot, lease);
-                var window = new MainWindow { DataContext = viewModel };
-                window.Show();
+                await lease.ReleaseAsync();
+                return await LaunchNewProcessAsync("--recover-draft", id.ToString("N"));
             }
-            else
-                ApplyDraft(snapshot, lease);
+            ApplyDraft(snapshot, lease);
             accepted = true;
             return true;
         }
         finally
         {
             if (!accepted) await lease.ReleaseAsync();
+        }
+    }
+
+    internal async Task OpenStartupDraftAsync(Guid id)
+    {
+        try
+        {
+            if (!await RecoverDraftAsync(id))
+                await ShowErrorAsync("This draft is already open or is no longer available.");
+        }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            await ShowErrorAsync($"Cannot recover the draft. {ex.Message}");
         }
     }
 

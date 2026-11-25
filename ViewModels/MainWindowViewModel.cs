@@ -2,10 +2,9 @@
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media;
+using Avalonia.Styling;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using MsBox.Avalonia;
-using MsBox.Avalonia.Enums;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
@@ -89,6 +88,7 @@ public partial class MainWindowViewModel : ObservableObject
         _timeProvider = timeProvider ?? TimeProvider.System;
         _draftStore = draftStore;
         var persisted = _settingsService.Load();
+        _settingsService.TrackChanges(persisted);
         Settings = persisted.Editor;
         SearchSettings = persisted.Search;
         PageSetupSettings = persisted.PageSetup;
@@ -181,6 +181,32 @@ public partial class MainWindowViewModel : ObservableObject
     private void OnEditorZoomRequested(object? sender, int direction) => SetZoom(Settings.ZoomLevel + direction * 10);
 
     public double EditorFontSize => Settings.FontSize * 96.0 / 72.0 * Settings.ZoomLevel / 100.0;
+    public bool IsSystemTheme => Settings.Theme == EditorTheme.System;
+    public bool IsLightTheme => Settings.Theme == EditorTheme.Light;
+    public bool IsDarkTheme => Settings.Theme == EditorTheme.Dark;
+
+    [RelayCommand]
+    private void SetTheme(EditorTheme theme)
+    {
+        if (!Enum.IsDefined(theme)) return;
+        Settings.Theme = theme;
+        ApplyTheme();
+        OnPropertyChanged(nameof(IsSystemTheme));
+        OnPropertyChanged(nameof(IsLightTheme));
+        OnPropertyChanged(nameof(IsDarkTheme));
+        PersistSettings();
+    }
+
+    internal void ApplyTheme()
+    {
+        if (Application.Current is { } app)
+            app.RequestedThemeVariant = Settings.Theme switch
+            {
+                EditorTheme.Light => ThemeVariant.Light,
+                EditorTheme.Dark => ThemeVariant.Dark,
+                _ => ThemeVariant.Default
+            };
+    }
     public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
     public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
 
@@ -371,7 +397,7 @@ public partial class MainWindowViewModel : ObservableObject
     private Task ReplaceAll() => RunSearchAsync(async editor =>
     {
         int count = _searchService.ReplaceAll(editor, SearchSettings);
-        await ShowMessageAsync("Notepad", $"Replaced {count} occurrence(s).", ButtonEnum.Ok);
+        await ShowMessageAsync("Notepad", $"Replaced {count} occurrence(s).", MessageButtons.Ok);
     });
 
     private async Task RunSearchAsync(Func<NeoEditor, Task> operation)
@@ -672,13 +698,13 @@ public partial class MainWindowViewModel : ObservableObject
 
     private Window? ActiveDialogOwner => _findReplaceDialog is { IsVisible: true, IsActive: true } ? _findReplaceDialog : OwnerWindow;
 
-    private async Task<ButtonResult> ShowMessageAsync(string title, string message, ButtonEnum buttons)
+    private async Task<DialogChoice> ShowMessageAsync(string title, string message, MessageButtons buttons)
     {
         if (ActiveDialogOwner is { IsVisible: true } owner)
-            return await MessageBoxManager.GetMessageBoxStandard(title, message, buttons).ShowWindowDialogAsync(owner);
+            return await MessageDialog.ShowAsync(owner, title, message, buttons);
 
-        return ButtonResult.None;
+        return DialogChoice.None;
     }
 
-    private Task ShowErrorAsync(string message) => ShowMessageAsync("Notepad", message, ButtonEnum.Ok);
+    private Task ShowErrorAsync(string message) => ShowMessageAsync("Notepad", message, MessageButtons.Ok);
 }

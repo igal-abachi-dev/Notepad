@@ -15,16 +15,14 @@ public partial class EncodingDialog : Window
 
     public List<EncodingOption> Options { get; }
 
-    public EncodingOption? SelectedOption { get; set; }
-
-    public string Prompt { get; }
+    public EncodingOption? SelectedOption => EncodingCombo.SelectedItem as EncodingOption;
 
     public EncodingDialog() : this(FileEncodingType.UTF8) { }
 
     public EncodingDialog(FileEncodingType? initial, bool forOpening = false)
     {
         InitializeComponent();
-        Prompt = forOpening ? "Select the file’s encoding." : "Select the encoding to save with.";
+        PromptText.Text = forOpening ? "Select the file’s encoding." : "Select the encoding to save with.";
         Options = new List<EncodingOption>
         {
             new(FileEncodingType.ANSI, "ANSI"),
@@ -34,9 +32,11 @@ public partial class EncodingDialog : Window
             new(FileEncodingType.UTF8, "UTF-8")
         };
         if (forOpening) Options.Insert(0, new(null, "Auto-detect"));
-        SelectedOption = Options.FirstOrDefault(o => o.Type == initial) ?? Options[0];
-        DataContext = this;
+        EncodingCombo.ItemsSource = Options;
+        EncodingCombo.SelectedItem = Options.FirstOrDefault(o => o.Type == initial) ?? Options[0];
     }
+
+    internal void SetPrompt(string text) => PromptText.Text = text;
 
     private void OnOk(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

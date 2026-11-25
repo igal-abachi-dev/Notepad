@@ -69,7 +69,10 @@ public class EditorSettings : ObservableObject
     public int WindowWidth { get; set; } = 800;
     public int WindowHeight { get; set; } = 600;
     public FileEncodingType DefaultEncoding { get; set; } = FileEncodingType.UTF8;
+    public EditorTheme Theme { get; set; }
 
     // Retained for older settings files. New documents use DefaultEncoding.
     public FileEncodingType LastEncoding { get; set; } = FileEncodingType.UTF8;
 }
+
+public enum EditorTheme { System, Light, Dark }

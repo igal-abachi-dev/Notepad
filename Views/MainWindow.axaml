@@ -1,10 +1,12 @@
 ﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:NotepadAvalonia.ViewModels"
+        xmlns:models="using:NotepadAvalonia.Models"
         xmlns:neo="using:Notepad.NeoEdit"
         x:Class="NotepadAvalonia.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title="{Binding Document.WindowTitle}"
+        Icon="/Assets/notepad.ico"
         MinWidth="320"
         MinHeight="220"
         DragDrop.AllowDrop="True">
@@ -54,6 +56,8 @@
         <MenuItem x:Name="RecentMenu" Header="_Recent Files" />
         <MenuItem Header="_Save" Command="{Binding SaveFileCommand}" InputGesture="Ctrl+S" />
         <MenuItem Header="Save _As..." Command="{Binding SaveFileAsCommand}" InputGesture="Ctrl+Shift+S" />
+        <MenuItem Header="_Default Encoding..." Command="{Binding ChangeDefaultEncodingCommand}"
+                  AutomationProperties.AutomationId="DefaultEncodingMenu" />
         <Separator />
         <MenuItem Header="Page Set_up..." Command="{Binding ShowPageSetupDialogCommand}" />
         <MenuItem Header="_Print..." Command="{Binding PrintCommand}" InputGesture="Ctrl+P" />
@@ -93,6 +97,14 @@
                   IsChecked="{Binding Settings.RightToLeft, Mode=OneWay}" />
       </MenuItem>
       <MenuItem Header="_View">
+        <MenuItem Header="_Theme">
+          <MenuItem Header="_System" ToggleType="Radio" GroupName="Theme" IsChecked="{Binding IsSystemTheme, Mode=OneWay}"
+                    Command="{Binding SetThemeCommand}" CommandParameter="{x:Static models:EditorTheme.System}" />
+          <MenuItem Header="_Light" ToggleType="Radio" GroupName="Theme" IsChecked="{Binding IsLightTheme, Mode=OneWay}"
+                    Command="{Binding SetThemeCommand}" CommandParameter="{x:Static models:EditorTheme.Light}" />
+          <MenuItem Header="_Dark" ToggleType="Radio" GroupName="Theme" IsChecked="{Binding IsDarkTheme, Mode=OneWay}"
+                    Command="{Binding SetThemeCommand}" CommandParameter="{x:Static models:EditorTheme.Dark}" />
+        </MenuItem>
         <MenuItem Header="_Zoom">
           <MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}" InputGesture="Ctrl+OemPlus" />
           <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}" InputGesture="Ctrl+OemMinus" />

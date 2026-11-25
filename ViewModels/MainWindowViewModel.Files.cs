@@ -1,13 +1,14 @@
 ﻿using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.Input;
-using MsBox.Avalonia.Enums;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.Views;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -51,11 +52,20 @@ public partial class MainWindowViewModel
     }
 
     [RelayCommand]
-    private void NewWindow()
+    private Task NewWindow() => LaunchNewProcessAsync();
+
+    private async Task<bool> LaunchNewProcessAsync(params string[] arguments)
     {
-        var viewModel = new MainWindowViewModel(_fileService, new SearchService(), _settingsService, _printService, _timeProvider, _draftStore);
-        var window = new MainWindow { DataContext = viewModel };
-        window.Show();
+        try
+        {
+            using var start = Process.Start(NotepadProcess.CreateStartInfo(Environment.ProcessPath, AppContext.BaseDirectory, arguments));
+            return start != null;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or Win32Exception)
+        {
+            await ShowErrorAsync($"Cannot open a new Notepad window. {ex.Message}");
+            return false;
+        }
     }
 
     [RelayCommand]
@@ -67,6 +77,23 @@ public partial class MainWindowViewModel
     [RelayCommand]
     private Task ReopenWithEncodingAsync() =>
         Document.IsUntitled ? Task.CompletedTask : OpenAsync(Document.FilePath, selectEncoding: true);
+
+    [RelayCommand]
+    private async Task ChangeDefaultEncodingAsync()
+    {
+        var dialog = new EncodingDialog(Settings.DefaultEncoding);
+        dialog.SetPrompt("Select the default encoding for new documents.");
+        var choice = await dialog.ShowDialog<EncodingDialog.EncodingOption?>(GetMainWindow());
+        if (choice?.Type is not { } encoding) return;
+        Settings.DefaultEncoding = encoding;
+        if (Document is { IsUntitled: true, IsModified: false } && EditorControl?.TextLength == 0)
+        {
+            Document.EncodingType = Document.SaveEncodingType = encoding;
+            Document.Encoding = _fileService.GetEncoding(encoding);
+            UpdateEncodingDisplay();
+        }
+        PersistSettings();
+    }
 
     private async Task OpenAsync(string? path, bool selectEncoding)
     {
@@ -212,8 +239,8 @@ public partial class MainWindowViewModel
         catch (EncoderFallbackException) when (encoding == FileEncodingType.ANSI && Document == original)
         {
             var answer = await ShowMessageAsync("Save encoding",
-                "Some characters cannot be saved in ANSI. Save this file as UTF-8?", ButtonEnum.YesNo);
-            if (answer != ButtonResult.Yes || Document != original) return false;
+                "Some characters cannot be saved in ANSI. Save this file as UTF-8?", MessageButtons.YesNo);
+            if (answer != DialogChoice.Yes || Document != original) return false;
             try
             {
                 return await SaveRevisionAsync(original, path, FileEncodingType.UTF8);
@@ -295,8 +322,8 @@ public partial class MainWindowViewModel
             if (OwnerWindow is not { IsVisible: true } owner) return false;
             var result = await SaveChangesDialog.AskAsync(owner, original.FileName);
             if (Document != original) return false;
-            if (result == ButtonResult.Yes) return await SaveCurrentDocumentAsync() && Document == original && !original.IsModified;
-            if (result != ButtonResult.No) return false;
+            if (result == DialogChoice.Yes) return await SaveCurrentDocumentAsync() && Document == original && !original.IsModified;
+            if (result != DialogChoice.No) return false;
             if (discardDraft) await ReleaseDocumentDraftAsync(original, discard: true);
             return true;
         }
@@ -325,9 +352,9 @@ public partial class MainWindowViewModel
         if (!File.Exists(path) && !Path.HasExtension(path)) path += ".txt";
         if (!File.Exists(path))
         {
-            var choice = await ShowMessageAsync("Notepad", $"Cannot find {path}. Do you want to create it?", ButtonEnum.YesNoCancel);
-            if (choice == ButtonResult.Cancel) { OwnerWindow?.Close(); return; }
-            if (choice != ButtonResult.Yes) return;
+            var choice = await ShowMessageAsync("Notepad", $"Cannot find {path}. Do you want to create it?", MessageButtons.YesNoCancel);
+            if (choice == DialogChoice.Cancel) { OwnerWindow?.Close(); return; }
+            if (choice != DialogChoice.Yes) return;
             try
             {
                 using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write);

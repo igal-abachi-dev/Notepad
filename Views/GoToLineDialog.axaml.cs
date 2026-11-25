@@ -13,12 +13,12 @@ public partial class GoToLineDialog : Window
 
     public GoToLineDialog(int maxLine, int currentLine = 1) : this()
     {
-        MaxLine = maxLine;
-        LineNumberTextBox.Text = Math.Clamp(currentLine, 1, maxLine).ToString(CultureInfo.CurrentCulture);
-        DataContext = this;
+        MaxLine = Math.Max(1, maxLine);
+        InfoText.Text = $"Line number (1 - {MaxLine})";
+        LineNumberTextBox.Text = Math.Clamp(currentLine, 1, MaxLine).ToString(CultureInfo.CurrentCulture);
     }
 
-    public int MaxLine { get; set; }
+    public int MaxLine { get; } = 1;
 
     private void OnGoTo(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

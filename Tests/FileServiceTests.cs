@@ -159,6 +159,29 @@ public class FileServiceTests
         Assert.Empty(Directory.GetFiles(System.IO.Path.GetDirectoryName(file.Path)!, "*.tmp"));
     }
 
+    [Fact]
+    public async Task TwoCommitsAgainstOneOriginalVersion_OnlyOneCanReplaceIt()
+    {
+        using var file = new TemporaryFile();
+        await File.WriteAllTextAsync(file.Path, "original");
+        var initial = await new FileService().ReadDocumentAsync(file.Path);
+        var a = CommitAsync("window A");
+        var b = CommitAsync("window B");
+        var results = await Task.WhenAll(a, b);
+        string committed = Assert.Single(results, text => text != null)!;
+        Assert.Equal(committed, await File.ReadAllTextAsync(file.Path));
+
+        async Task<string?> CommitAsync(string replacement)
+        {
+            try
+            {
+                await new FileService().CommitFileAsync(file.Path, replacement, initial.EncodingType, initial.LineEnding, initial.Version);
+                return replacement;
+            }
+            catch (FileChangedException) { return null; }
+        }
+    }
+
     private sealed class TemporaryFile : IDisposable
     {
         private readonly DirectoryInfo _folder = Directory.CreateTempSubdirectory("notepad-file-tests-");

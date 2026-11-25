@@ -69,7 +69,7 @@ public class DraftRecoveryTests
     }
 
     [AvaloniaFact]
-    public async Task Window_StartsBlankAndRecoversOnlyViaMenuAfterQuietClose()
+    public async Task Window_CancelKeepsTheDraftAndNextLaunchRecoversOnlyViaMenu()
     {
         using var folder = new DraftFolder();
         var store = new DraftStore(folder.Path);
@@ -90,7 +90,16 @@ public class DraftRecoveryTests
             var closed = new TaskCompletionSource();
             first.Closed += (_, _) => closed.SetResult();
             first.Close();
-            Assert.Empty(first.OwnedWindows);
+            var prompt = Assert.Single(first.OwnedWindows);
+            prompt.GetVisualDescendants().OfType<Button>().Single(button => button.IsCancel)
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(first.IsVisible);
+            Assert.Equal("unsaved text", editor.Text);
+            Assert.Single(Directory.GetFiles(folder.Path, "*.draft"));
+
+            // An operating-system close checkpoints drafts without treating it as explicit discard.
+            await firstModel.CheckpointForSystemShutdownAsync();
+            first.CloseApproved();
             await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             var nextModel = CreateModel(new DraftStore(folder.Path), folder.Path);
@@ -114,9 +123,37 @@ public class DraftRecoveryTests
         }
         finally
         {
-            if (first.IsVisible) await CloseAsync(first);
-            if (second?.IsVisible == true) await CloseAsync(second);
+            if (first.IsVisible) await CloseAsync(first, preserveDraft: true);
+            if (second?.IsVisible == true) await CloseAsync(second, preserveDraft: true);
             await WaitForAsync(async () => (await store.DiscoverAsync()).Count == 1);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Window_DontSaveOnClassicClose_RemovesTheRecoveryDraft()
+    {
+        using var folder = new DraftFolder();
+        var store = new DraftStore(folder.Path);
+        var model = CreateModel(store, folder.Path);
+        var window = Show(model);
+        try
+        {
+            window.KeyTextInput("discard this");
+            Assert.True(await model.CheckpointDraftAsync());
+            Assert.Single(Directory.GetFiles(folder.Path, "*.draft"));
+            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closed.SetResult();
+            window.Close();
+            var prompt = Assert.Single(window.OwnedWindows);
+            prompt.GetVisualDescendants().OfType<Button>().Single(button => !button.IsDefault && !button.IsCancel)
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(await store.DiscoverAsync());
+            Assert.Empty(Directory.GetFiles(folder.Path, "*.draft"));
+        }
+        finally
+        {
+            if (window.IsVisible) await CloseAsync(window, preserveDraft: true);
         }
     }
 
@@ -160,11 +197,17 @@ public class DraftRecoveryTests
         return window;
     }
 
-    private static async Task CloseAsync(MainWindow window)
+    private static async Task CloseAsync(MainWindow window, bool preserveDraft = false)
     {
         var closed = new TaskCompletionSource();
         window.Closed += (_, _) => closed.SetResult();
-        window.Close();
+        if (preserveDraft)
+        {
+            await window.ViewModel.CheckpointForSystemShutdownAsync();
+            window.CloseApproved();
+        }
+        else
+            window.Close();
         await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 

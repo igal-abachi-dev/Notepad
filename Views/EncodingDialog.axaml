@@ -5,23 +5,15 @@
         SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
-        Title="Encoding"
-        x:CompileBindings="False">
+        Title="Encoding">
 	<StackPanel Margin="12" Spacing="12">
-		<TextBlock Text="{Binding Prompt}" />
+		<TextBlock x:Name="PromptText" />
 		<ComboBox x:Name="EncodingCombo"
-				  ItemsSource="{Binding Options}"
-				  SelectedItem="{Binding SelectedOption}"
 				  HorizontalAlignment="Stretch"
-				  AutomationProperties.Name="Encoding">
-			<ComboBox.ItemTemplate>
-				<DataTemplate>
-					<TextBlock Text="{Binding Name}" />
-				</DataTemplate>
-			</ComboBox.ItemTemplate>
-		</ComboBox>
+				  AutomationProperties.Name="Encoding"
+				  AutomationProperties.AutomationId="EncodingOptions" />
 		<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-			<Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" />
+			<Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" AutomationProperties.AutomationId="EncodingAccept" />
 			<Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />
 		</StackPanel>
 	</StackPanel>

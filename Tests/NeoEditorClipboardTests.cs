@@ -1,5 +1,6 @@
 using System.IO;
 using System.Threading.Tasks;
+using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -62,5 +63,41 @@ public class NeoEditorClipboardTests
             window.Close();
             folder.Delete();
         }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReverseSelections_CopyCutUndoAndRedoWithoutLosingCharacters(bool multiline)
+    {
+        string selected = multiline ? "e\u0301\r\n\u05D0\u05D1\n\U0001F600" : "e\u0301 \U0001F600";
+        string text = "left " + selected + " right";
+        var editor = new NeoEditor();
+        var window = new Window { Content = editor, Width = 420, Height = 240 };
+        try
+        {
+            window.Show();
+            Assert.True(editor.Focus());
+            editor.LoadDocument(text);
+            int start = "left ".Length;
+            int end = start + selected.Length;
+            editor.SetSelection(end, -selected.Length);
+            Assert.Equal((end, start), (editor.SelectionAnchor, editor.CaretOffset));
+            await editor.CopyAsync();
+            Assert.Equal(selected, await window.Clipboard!.TryGetTextAsync());
+            Assert.Equal(text, editor.Text);
+            Assert.False(editor.IsModified);
+            await editor.CutAsync();
+            Assert.Equal("left  right", editor.Text);
+            Assert.Equal(start, editor.CaretOffset);
+            editor.Undo();
+            Assert.Equal(text, editor.Text);
+            Assert.Equal((end, start), (editor.SelectionAnchor, editor.CaretOffset));
+            Assert.False(editor.IsModified);
+            editor.Redo();
+            Assert.Equal("left  right", editor.Text);
+            Assert.Equal(0, editor.SelectionLength);
+        }
+        finally { window.Close(); }
     }
 }

@@ -214,7 +214,8 @@ public class MainWindowViewModelTests
         Assert.True(settings.LoadEditorSettings().ShowStatusBar);
         settings.SaveEditorSettings(new EditorSettings { WordWrap = true });
         Assert.True(settings.LoadEditorSettings().WordWrap);
-        Assert.Equal(path, Assert.Single(Directory.GetFiles(files.Path)));
+        Assert.Equal(path, Assert.Single(Directory.GetFiles(files.Path, "*.json")));
+        Assert.Empty(Directory.GetFiles(files.Path, "*.tmp"));
     }
 
     [AvaloniaFact]

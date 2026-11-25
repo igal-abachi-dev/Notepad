@@ -5,7 +5,9 @@
 	  <PublishAot>true</PublishAot>
 	  <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/notepad.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Helix-Save/**</DefaultItemExcludes>
 
 
 	  <!-- 3. MSIX Packaging Settings --><!--
@@ -24,6 +26,7 @@
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
     <Compile Remove="Tests/**" />
+    <InternalsVisibleTo Include="Notepad.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -37,7 +40,6 @@
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="MessageBox.Avalonia" Version="3.3.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
   </ItemGroup>
 

@@ -2,6 +2,7 @@
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.ViewModels;
@@ -26,33 +27,56 @@ public partial class App : Application
             desktop.ShutdownMode = ShutdownMode.OnLastWindowClose;
             desktop.ShutdownRequested += OnShutdownRequested;
 
-            var viewModel = new MainWindowViewModel(new FileService(), new SearchService(), new SettingsService(),
-                new PrintService(), draftStore: DraftStore.ForCurrentUser());
+            var args = desktop.Args ?? [];
+            string? smokeReport = args is ["--verify-release", var report] ? Path.GetFullPath(report) : null;
+            string? smokeSettings = smokeReport == null ? null : smokeReport + ".settings.json";
+            var viewModel = new MainWindowViewModel(new FileService(), new SearchService(), new SettingsService(smokeSettings),
+                new PrintService(), draftStore: smokeReport == null ? DraftStore.ForCurrentUser() : null);
+            viewModel.ApplyTheme();
             var main = new MainWindow { DataContext = viewModel };
             desktop.MainWindow = main;
-            if (desktop.Args != null && ParseStartupArguments(desktop.Args) is { } startup)
-                main.Opened += async (_, _) => await viewModel.OpenStartupFileAsync(startup.Path, startup.Encoding, startup.Print);
+            if (smokeReport != null)
+                main.Opened += (_, _) => Dispatcher.UIThread.Post(() => _ = ReleaseSmokeTest.RunAsync(desktop, main, smokeReport), DispatcherPriority.Loaded);
+            else
+            {
+                var startup = ParseStartupArguments(args);
+                if (startup.DraftId is { } draft)
+                    main.Opened += async (_, _) => await viewModel.OpenStartupDraftAsync(draft);
+                else if (startup.Path is { } path)
+                    main.Opened += async (_, _) => await viewModel.OpenStartupFileAsync(path, startup.Encoding, startup.Print);
+            }
         }
         base.OnFrameworkInitializationCompleted();
     }
 
-    internal static (string Path, FileEncodingType? Encoding, bool Print)? ParseStartupArguments(string[] arguments)
+    internal static (string? Path, FileEncodingType? Encoding, bool Print, Guid? DraftId) ParseStartupArguments(string[] arguments)
     {
+        if (arguments.Length == 2 && arguments[0] == "--recover-draft" && Guid.TryParseExact(arguments[1], "N", out var draft))
+            return (null, null, false, draft);
+
+        string? path = null;
         FileEncodingType? encoding = null;
         bool print = false;
+        bool options = true;
         foreach (string arg in arguments)
         {
+            if (!options)
+            {
+                if (!string.IsNullOrWhiteSpace(arg)) path ??= arg;
+                continue;
+            }
             switch (arg.ToUpperInvariant())
             {
+                case "--": options = false; break;
                 case "/A": encoding = FileEncodingType.ANSI; break;
                 case "/W": encoding = FileEncodingType.UTF16LE; break;
                 case "/P": print = true; break;
                 default:
-                    if (!string.IsNullOrWhiteSpace(arg)) return (arg, encoding, print);
+                    if (!string.IsNullOrWhiteSpace(arg)) path ??= arg;
                     break;
             }
         }
-        return null;
+        return (path, encoding, print, null);
     }
 
     private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Text.Unicode;
 
 namespace NotepadAvalonia.Services;
@@ -84,20 +85,7 @@ public class FileService
                 written = await ReadVersionAsync(stream);
             }
 
-            await using var original = expected == null ? null : OpenForVersionCheck(destination);
-            if (original != null && (original.Length != expected!.Length || await ReadVersionAsync(original) != expected))
-                throw new FileChangedException();
-
-            if (original != null || File.Exists(destination))
-            {
-                if (!OperatingSystem.IsWindows())
-                    File.SetUnixFileMode(tempPath, File.GetUnixFileMode(destination));
-                File.Replace(tempPath, destination, null);
-            }
-            else
-            {
-                File.Move(tempPath, destination);
-            }
+            await Task.Run(() => CommitStagedFile(tempPath, destination, expected));
             created = false;
             return written;
         }
@@ -109,6 +97,38 @@ public class FileService
 
     private static async Task<FileVersion> ReadVersionAsync(FileStream stream) =>
         new(stream.Length, Convert.ToHexString(await SHA256.HashDataAsync(stream)));
+
+    private static void CommitStagedFile(string staging, string destination, FileVersion? expected)
+    {
+        string pathKey = OperatingSystem.IsWindows() ? destination.ToUpperInvariant() : destination;
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(pathKey)));
+        using var mutex = new Mutex(false, "NotepadAvalonia-save-" + digest);
+        bool acquired;
+        try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(5)); }
+        catch (AbandonedMutexException) { acquired = true; }
+        if (!acquired) throw new IOException("Another Notepad process is still saving this file.");
+
+        try
+        {
+            using var original = expected == null ? null : OpenForVersionCheck(destination);
+            if (original != null && (original.Length != expected!.Length ||
+                !StringComparer.Ordinal.Equals(Convert.ToHexString(SHA256.HashData(original)), expected.Sha256)))
+                throw new FileChangedException();
+
+            if (original != null || File.Exists(destination))
+            {
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(staging, File.GetUnixFileMode(destination));
+                File.Replace(staging, destination, null);
+            }
+            else
+                File.Move(staging, destination);
+        }
+        finally
+        {
+            mutex.ReleaseMutex();
+        }
+    }
 
     private static FileStream OpenForVersionCheck(string path)
     {
