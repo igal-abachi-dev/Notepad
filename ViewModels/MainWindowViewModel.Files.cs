@@ -1,16 +1,15 @@
 ﻿using Avalonia.Controls;
-using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.Input;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.Views;
 using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,8 +19,6 @@ namespace NotepadAvalonia.ViewModels;
 public partial class MainWindowViewModel
 {
     private static readonly SemaphoreSlim SaveQueue = new(1);
-    private static readonly FilePickerFileType TextFiles = new("Text Documents") { Patterns = ["*.txt"] };
-    private static readonly IReadOnlyList<FilePickerFileType> FileTypes = [TextFiles, FilePickerFileTypes.All];
     private long _loadRequest;
     private bool _saveDecisionPending;
     private bool _savePickerPending;
@@ -101,20 +98,15 @@ public partial class MainWindowViewModel
         long revision = _editVersion;
         try
         {
+            FileEncodingType? encoding = null;
             if (string.IsNullOrEmpty(path))
             {
-                var owner = GetMainWindow();
-                var files = await owner.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-                {
-                    Title = "Open",
-                    FileTypeFilter = FileTypes,
-                    SuggestedStartLocation = await GetDocumentFolderAsync(owner, original)
-                });
-                if (files.Count == 0) return;
-                path = files[0].TryGetLocalPath() ?? throw new IOException("Select a file on an accessible file system.");
+                var file = await PickFileAsync(original, saveEncoding: null);
+                if (file == null) return;
+                (path, encoding) = file;
+                selectEncoding = false;
             }
 
-            FileEncodingType? encoding = null;
             if (selectEncoding)
             {
                 var picker = new EncodingDialog(null, forOpening: true);
@@ -139,10 +131,23 @@ public partial class MainWindowViewModel
         long request = ++_loadRequest;
         var windowsOnly = Settings.WindowsOnlyLineEndings;
         LoadedFile file;
+        bool openedCopy = false;
         try
         {
             path = Path.GetFullPath(path);
-            file = await _fileService.ReadDocumentAsync(path, requestedEncoding, windowsOnly);
+            try
+            {
+                file = await _fileService.ReadDocumentAsync(path, requestedEncoding, windowsOnly);
+            }
+            catch (DecoderFallbackException) when (IsCurrent() && OwnerWindow is { IsVisible: true })
+            {
+                var choice = await ShowMessageAsync("Invalid text encoding",
+                    $"{Path.GetFileName(path)} contains invalid bytes for this encoding. Open an untitled copy with replacement characters? " +
+                    "Choose No to try a different encoding.", MessageButtons.YesNo);
+                if (choice != DialogChoice.Yes || !IsCurrent()) return false;
+                file = await _fileService.ReadDocumentWithReplacementAsync(path, requestedEncoding, windowsOnly);
+                openedCopy = true;
+            }
         }
         catch (Exception ex) when (IsFileError(ex))
         {
@@ -153,24 +158,26 @@ public partial class MainWindowViewModel
         }
 
         if (!IsCurrent()) return false;
-        _pendingLogAppend = file.Content.StartsWith(".LOG", StringComparison.Ordinal)
+        _pendingLogAppend = !openedCopy && file.Content.StartsWith(".LOG", StringComparison.Ordinal)
             ? $"\r\n{FormatTimeDate(_timeProvider.GetLocalNow().DateTime)}\r\n" : null;
+        var encodingType = openedCopy ? FileEncodingType.UTF8 : file.EncodingType;
         Document = new DocumentModel
         {
-            FilePath = path,
-            IsUntitled = false,
-            IsModified = _pendingLogAppend != null,
-            Encoding = file.Encoding,
-            EncodingType = file.EncodingType,
-            SaveEncodingType = file.EncodingType,
+            FilePath = openedCopy ? "" : path,
+            IsUntitled = openedCopy,
+            IsModified = openedCopy || _pendingLogAppend != null,
+            Encoding = openedCopy ? _fileService.GetEncoding(encodingType) : file.Encoding,
+            EncodingType = encodingType,
+            SaveEncodingType = encodingType,
             LineEnding = file.LineEnding,
-            SavedFileVersion = file.Version
+            SavedFileVersion = openedCopy ? null : file.Version
         };
         CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
         ResetEditor(file.Content);
         UpdateEncodingDisplay();
         UpdateStatus();
-        AddRecentFile(path);
+        if (!openedCopy) AddRecentFile(path);
+        else ScheduleDraftCheckpoint();
         PersistSettings();
         await ReleaseDocumentDraftAsync(previousDocument, discard: true);
         return true;
@@ -198,21 +205,9 @@ public partial class MainWindowViewModel
         _savePickerPending = true;
         try
         {
-            var owner = GetMainWindow();
-            var file = await owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = "Save As",
-                DefaultExtension = "txt",
-                SuggestedFileName = original.IsUntitled ? null : original.FileName,
-                SuggestedStartLocation = await GetDocumentFolderAsync(owner, original),
-                FileTypeChoices = FileTypes,
-                ShowOverwritePrompt = true
-            });
-            if (file == null || Document != original) return false;
-            var path = file.TryGetLocalPath() ?? throw new IOException("Select a file on an accessible file system.");
-            var picker = new EncodingDialog(original.SaveEncodingType);
-            var choice = await picker.ShowDialog<EncodingDialog.EncodingOption?>(owner);
-            return choice?.Type is { } encoding && Document == original && await SaveWithRetryAsync(original, path, encoding);
+            var file = await PickFileAsync(original, original.SaveEncodingType);
+            return file is { Encoding: { } encoding } && Document == original &&
+                await SaveWithRetryAsync(original, file.Path, encoding);
         }
         catch (Exception ex) when (IsFileError(ex))
         {
@@ -225,10 +220,9 @@ public partial class MainWindowViewModel
         }
     }
 
-    private static async Task<IStorageFolder?> GetDocumentFolderAsync(Window owner, DocumentModel original) =>
-        original.IsUntitled || Path.GetDirectoryName(original.FilePath) is not { } folder
-            ? null
-            : await owner.StorageProvider.TryGetFolderFromPathAsync(folder);
+    private Task<FilePickerDialog.Choice?> PickFileAsync(DocumentModel document, FileEncodingType? saveEncoding) =>
+        new FilePickerDialog(document.IsUntitled ? null : document.FilePath, RecentFiles.FirstOrDefault(), saveEncoding)
+            .ShowDialog<FilePickerDialog.Choice?>(GetMainWindow());
 
     private async Task<bool> SaveWithRetryAsync(DocumentModel original, string path, FileEncodingType encoding)
     {

@@ -125,6 +125,25 @@ public class FileServiceTests
         Assert.Equal(service.GetEncoding(FileEncodingType.ANSI).GetString(await File.ReadAllBytesAsync(file.Path)), ansi.content);
     }
 
+    [Theory]
+    [InlineData("EFBBBF4100C342", FileEncodingType.UTF8BOM, "A\0\uFFFDB")]
+    [InlineData("FFFE410042", FileEncodingType.UTF16LE, "A\uFFFD")]
+    [InlineData("FEFF004100", FileEncodingType.UTF16BE, "A\uFFFD")]
+    public async Task InvalidUnicode_StrictOpenFailsAndExplicitRecoveryReplacesOnlyInvalidBytes(
+        string hex, FileEncodingType type, string expected)
+    {
+        using var file = new TemporaryFile();
+        var service = new FileService();
+        var original = Convert.FromHexString(hex);
+        await File.WriteAllBytesAsync(file.Path, original);
+        await Assert.ThrowsAsync<DecoderFallbackException>(() => service.ReadDocumentAsync(file.Path));
+
+        var recovered = await service.ReadDocumentWithReplacementAsync(file.Path, null, windowsOnly: false);
+        Assert.Equal(type, recovered.EncodingType);
+        Assert.Equal(expected, recovered.Content);
+        Assert.Equal(original, await File.ReadAllBytesAsync(file.Path));
+    }
+
     [Fact]
     public async Task SaveFileAsync_WindowsSharingViolationRetainsTheOriginalAndCleansStaging()
     {

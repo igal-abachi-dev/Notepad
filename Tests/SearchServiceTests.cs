@@ -2,6 +2,7 @@ using Avalonia.Headless.XUnit;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -14,6 +15,58 @@ public class SearchServiceTests
         var editor = new NeoEditor();
         editor.Text = text;
         return editor;
+    }
+
+    [AvaloniaFact]
+    public void LiteralSearch_UsesTheDocumentSpanForCanonicallyEquivalentMatches()
+    {
+        var editor = CreateEditor("cafe\u0301 caf\u00e9");
+        var service = new SearchService();
+        var settings = new SearchSettings { SearchString = "caf\u00e9", ReplaceString = "x", MatchCase = true, WholeWord = true };
+
+        Assert.Equal(new SearchResult(0, 5), service.FindNext(editor, settings).result);
+        editor.CaretOffset = editor.TextLength;
+        Assert.Equal(new SearchResult(6, 4), service.FindPrevious(editor, settings).result);
+        editor.SetSelection(0, 5);
+        Assert.Equal(1, service.ReplaceNext(editor, settings));
+        Assert.Equal("x caf\u00e9", editor.Text);
+        Assert.Equal(1, service.ReplaceAll(editor, settings));
+        Assert.Equal("x x", editor.Text);
+        editor.Undo();
+        Assert.Equal("x caf\u00e9", editor.Text);
+        editor.Undo();
+        Assert.Equal("cafe\u0301 caf\u00e9", editor.Text);
+    }
+
+    [AvaloniaFact]
+    public void LiteralSearch_UsesLocaleCasingAndKeepsExplicitControlCharacterQueries()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+            var editor = CreateEditor("I i \u0131 \u0130 a\0b");
+            var service = new SearchService();
+            Assert.Equal(new SearchResult(2, 1), service.FindNext(editor, new() { SearchString = "i" }).result);
+            Assert.Equal(new SearchResult(9, 1), service.FindNext(editor, new() { SearchString = "\0" }).result);
+            Assert.Null(service.FindNext(editor, new() { SearchString = "ab" }).result);
+            Assert.Equal(1, service.ReplaceAll(editor, new() { SearchString = "\0", ReplaceString = "-" }));
+            Assert.Equal("I i \u0131 \u0130 a-b", editor.Text);
+        }
+        finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [AvaloniaFact]
+    public void ReplaceAll_ZeroWidthRegexCannotSplitCrLfOrASurrogatePair()
+    {
+        var editor = CreateEditor("a\r\n\U0001F600b");
+        var service = new SearchService();
+        var settings = new SearchSettings { SearchString = "(?=)", ReplaceString = "|", UseRegex = true };
+
+        Assert.Equal(5, service.ReplaceAll(editor, settings));
+        Assert.Equal("|a|\r\n|\U0001F600|b|", editor.Text);
+        editor.Undo();
+        Assert.Equal("a\r\n\U0001F600b", editor.Text);
     }
 
     [AvaloniaFact]

@@ -128,6 +128,7 @@ public sealed partial class NeoEditor : Control
         InvalidateDocumentLayout();
         Offset = default;
         NotifyCaretMoved();
+        NotifyAutomationValueChanged();
     }
 
     public long CaptureSaveRevision()
@@ -321,6 +322,7 @@ public sealed partial class NeoEditor : Control
         _wrappedRowEnd = false;
         UpdateCaret();
         TextChanged?.Invoke(this, EventArgs.Empty);
+        NotifyAutomationValueChanged();
     }
 
     private void UpdateCaret()

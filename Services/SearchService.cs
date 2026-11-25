@@ -24,8 +24,8 @@ public class SearchService
 
     private (SearchResult? result, bool wrapped) Find(NeoEditor editor, SearchSettings settings, bool forward)
     {
-        string text = editor.GetText();
         if (string.IsNullOrEmpty(settings.SearchString)) return (null, false);
+        string text = editor.GetText();
 
         int boundary = editor.SelectionStart + (forward ? editor.SelectionLength : 0);
         var key = new ZeroWidthMatch(editor, editor.DocumentVersion, editor.SelectionVersion, boundary, settings.SearchString,
@@ -81,8 +81,8 @@ public class SearchService
         }
         else
         {
-            selected = length == query.Length &&
-                text.AsSpan(start, length).Equals(query, GetComparison(settings)) &&
+            selected = length > 0 &&
+                new LiteralSearch(settings).Matches(text.AsSpan(start, length)) &&
                 IsEligible(text, start, length, settings.WholeWord, protectCrLf: true);
         }
 
@@ -134,25 +134,20 @@ public class SearchService
             for (var match = regex.Match(text); match.Success; match = match.NextMatch())
             {
                 CheckTimeout(started, text, regex);
-                if (IsEligible(text, match.Index, match.Length, settings.WholeWord, protectCrLf: false))
+                if (IsEligible(text, match.Index, match.Length, settings.WholeWord, protectCrLf: match.Length == 0))
                     AppendReplacement(match.Index, match.Length, match.Result(settings.ReplaceString));
             }
         }
         else
         {
-            int start = 0;
-            var comparison = GetComparison(settings);
-            while (start <= text.Length - query.Length)
+            var literal = new LiteralSearch(settings);
+            for (int start = 0; start < text.Length;)
             {
-                int index = text.IndexOf(query, start, comparison);
-                if (index < 0) break;
-                if (IsEligible(text, index, query.Length, settings.WholeWord, protectCrLf: false))
-                {
-                    AppendReplacement(index, query.Length, settings.ReplaceString);
-                    start = index + query.Length;
-                }
-                else
-                    start = index + 1;
+                var match = FindLiteral(text, literal, start, text.Length, forward: true,
+                    settings.WholeWord, protectCrLf: false);
+                if (match == null) break;
+                AppendReplacement(match.StartOffset, match.Length, settings.ReplaceString);
+                start = match.StartOffset + match.Length;
             }
         }
 
@@ -184,19 +179,23 @@ public class SearchService
             return null;
         }
 
-        var query = settings.SearchString.AsSpan();
-        var comparison = GetComparison(settings);
-        while (end - start >= query.Length)
+        return FindLiteral(text, new LiteralSearch(settings), start, end, forward,
+            settings.WholeWord, protectCrLf: true);
+    }
+
+    private static SearchResult? FindLiteral(string text, LiteralSearch literal, int start, int end,
+        bool forward, bool wholeWord, bool protectCrLf)
+    {
+        while (start < end)
         {
-            var window = text.AsSpan(start, end - start);
-            int offset = forward ? window.IndexOf(query, comparison) : window.LastIndexOf(query, comparison);
-            if (offset < 0) break;
+            int offset = literal.Find(text.AsSpan(start, end - start), forward, out int length);
+            if (offset < 0 || length == 0) break;
             int index = start + offset;
-            if (IsEligible(text, index, query.Length, settings.WholeWord, protectCrLf: true))
-                return new(index, query.Length);
+            if (literal.CanConsume(text.AsSpan(index, length)) && IsEligible(text, index, length, wholeWord, protectCrLf))
+                return new(index, length);
 
             if (forward) start = index + 1;
-            else end = index + query.Length - 1;
+            else end = index + length - 1;
         }
 
         return null;
@@ -215,8 +214,39 @@ public class SearchService
             throw new RegexMatchTimeoutException(text, regex.ToString(), RegexTimeout);
     }
 
-    private static StringComparison GetComparison(SearchSettings settings) =>
-        settings.MatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+    private readonly struct LiteralSearch
+    {
+        private readonly string _query;
+        private readonly CompareInfo _compare;
+        private readonly CompareOptions _options;
+        private readonly bool _ordinal;
+
+        public LiteralSearch(SearchSettings settings)
+        {
+            _query = settings.SearchString;
+            _compare = CultureInfo.CurrentCulture.CompareInfo;
+            var linguisticOptions = settings.MatchCase ? CompareOptions.None : CompareOptions.IgnoreCase;
+            // Collation can ignore control and formatting characters. A query for those
+            // characters should still search for the actual text and consume it on a hit.
+            _ordinal = ContainsLiteralControl(_query) || _compare.Compare(_query, "", linguisticOptions) == 0;
+            _options = _ordinal ? (settings.MatchCase ? CompareOptions.Ordinal : CompareOptions.OrdinalIgnoreCase) : linguisticOptions;
+        }
+
+        public int Find(ReadOnlySpan<char> text, bool forward, out int length) =>
+            forward ? _compare.IndexOf(text, _query, _options, out length)
+                : _compare.LastIndexOf(text, _query, _options, out length);
+
+        public bool Matches(ReadOnlySpan<char> text) => CanConsume(text) && _compare.Compare(text, _query, _options) == 0;
+
+        public bool CanConsume(ReadOnlySpan<char> text) => _ordinal || !ContainsLiteralControl(text);
+
+        private static bool ContainsLiteralControl(ReadOnlySpan<char> text)
+        {
+            foreach (char character in text)
+                if (char.IsControl(character) || char.GetUnicodeCategory(character) == UnicodeCategory.Format) return true;
+            return false;
+        }
+    }
 
     private static bool IsEligible(string text, int start, int length, bool wholeWord, bool protectCrLf)
     {

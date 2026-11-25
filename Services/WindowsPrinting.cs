@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 namespace NotepadAvalonia.Services;
 
 [SupportedOSPlatform("windows")]
-internal static class WindowsPrinting
+internal static partial class WindowsPrinting
 {
     private const uint ReturnDc = 0x100;
     private const uint ReturnDefault = 0x400;
@@ -154,22 +154,24 @@ internal static class WindowsPrinting
             throw new IOException("No printer is configured.");
         var memory = GlobalLock(mode);
         if (memory == 0) throw new Win32Exception();
-        try
-        {
-            // Offsets in the public DEVMODEW prefix. Leave the driver-private data untouched.
-            const int fieldsOffset = 72, orientationOffset = 76, paperSizeOffset = 78;
-            const int orientationField = 0x1, paperSizeField = 0x2, lengthAndWidthFields = 0xC;
-            int fields = Marshal.ReadInt32(memory, fieldsOffset) | orientationField;
-            Marshal.WriteInt16(memory, orientationOffset, setup.Landscape ? (short)Landscape : (short)1);
-            short paper = setup.Paper switch { PaperSize.Letter => 1, PaperSize.Legal => 5, PaperSize.A4 => 9, _ => 0 };
-            if (paper != 0)
-            {
-                fields = (fields & ~lengthAndWidthFields) | paperSizeField;
-                Marshal.WriteInt16(memory, paperSizeOffset, paper);
-            }
-            Marshal.WriteInt32(memory, fieldsOffset, fields);
-        }
+        try { ApplyPageSettings(memory, setup); }
         finally { GlobalUnlock(mode); }
+    }
+
+    private static void ApplyPageSettings(nint mode, PageSetupSettings setup)
+    {
+        // Public DEVMODEW fields. Leave the driver-private data untouched.
+        const int fieldsOffset = 72, orientationOffset = 76, paperSizeOffset = 78;
+        const int orientationField = 0x1, paperSizeField = 0x2, lengthAndWidthFields = 0xC;
+        int fields = Marshal.ReadInt32(mode, fieldsOffset) | orientationField;
+        Marshal.WriteInt16(mode, orientationOffset, setup.Landscape ? (short)Landscape : (short)1);
+        short paper = setup.Paper switch { PaperSize.Letter => 1, PaperSize.Legal => 5, PaperSize.A4 => 9, _ => 0 };
+        if (paper != 0)
+        {
+            fields = (fields & ~lengthAndWidthFields) | paperSizeField;
+            Marshal.WriteInt16(mode, paperSizeOffset, paper);
+        }
+        Marshal.WriteInt32(mode, fieldsOffset, fields);
     }
 
     private static short ReadOrientation(nint mode)

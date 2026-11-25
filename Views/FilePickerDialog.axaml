@@ -1,0 +1,62 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:NotepadAvalonia.Views"
+        x:Class="NotepadAvalonia.Views.FilePickerDialog"
+        Width="730" Height="510" MinWidth="545" MinHeight="365"
+        ShowInTaskbar="False" WindowStartupLocation="CenterOwner">
+  <Grid Margin="16" RowDefinitions="Auto,*,Auto,Auto,Auto" RowSpacing="10">
+    <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="6">
+      <Button x:Name="BackButton" Content="_Back" Click="OnBack" />
+      <Button x:Name="UpButton" Grid.Column="1" Content="_Up" Click="OnUp" />
+      <TextBox x:Name="FolderBox" Grid.Column="2" AutomationProperties.Name="Folder path"
+               KeyDown="OnFolderKeyDown" />
+      <Button Grid.Column="3" Content="_New Folder" Click="OnNewFolder" />
+    </Grid>
+    <Grid Grid.Row="1" ColumnDefinitions="126,*" ColumnSpacing="10">
+      <ListBox x:Name="Places" AutomationProperties.Name="Locations" SelectionChanged="OnPlaceChanged" />
+      <Grid Grid.Column="1" RowDefinitions="Auto,*">
+        <Grid Margin="9,0,9,6" ColumnDefinitions="*,82,130" ColumnSpacing="8">
+          <TextBlock Text="Name" FontWeight="SemiBold" />
+          <TextBlock Grid.Column="1" Text="Type" FontWeight="SemiBold" />
+          <TextBlock Grid.Column="2" Text="Modified" FontWeight="SemiBold" />
+        </Grid>
+        <ListBox x:Name="Entries" Grid.Row="1" AutomationProperties.Name="Files and folders"
+                 SelectionChanged="OnEntryChanged" DoubleTapped="OnEntryDoubleTapped" KeyDown="OnEntryKeyDown">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            </Style>
+          </ListBox.Styles>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="local:FilePickerEntry">
+              <Grid ColumnDefinitions="*,82,130" ColumnSpacing="8">
+                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1" Text="{Binding Kind}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="2" Text="{Binding Modified}" TextTrimming="CharacterEllipsis" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Grid>
+    <Grid Grid.Row="2" ColumnDefinitions="90,*,76,145" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
+      <Label Content="_File name" Target="{Binding #FileNameBox}" />
+      <TextBox x:Name="FileNameBox" Grid.Column="1" Grid.ColumnSpan="3" AutomationProperties.Name="File name" />
+      <Label Grid.Row="1" Content="File _type" Target="{Binding #FilterBox}" />
+      <ComboBox x:Name="FilterBox" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Stretch"
+                AutomationProperties.Name="File type" SelectionChanged="OnFilterChanged">
+        <ComboBoxItem Content="Text Documents (*.txt)" />
+        <ComboBoxItem Content="All Files (*.*)" />
+      </ComboBox>
+      <Label Grid.Row="1" Grid.Column="2" Content="_Encoding" Target="{Binding #EncodingBox}" />
+      <ComboBox x:Name="EncodingBox" Grid.Row="1" Grid.Column="3" HorizontalAlignment="Stretch"
+                AutomationProperties.Name="Encoding" />
+    </Grid>
+    <TextBlock x:Name="Status" Grid.Row="3" TextWrapping="Wrap" IsVisible="False"
+               AutomationProperties.LiveSetting="Polite" />
+    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="AcceptButton" MinWidth="88" IsDefault="True" Click="OnAccept" />
+      <Button Content="Cancel" IsCancel="True" Click="OnCancel" MinWidth="88" />
+    </StackPanel>
+  </Grid>
+</Window>

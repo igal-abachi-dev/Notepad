@@ -23,6 +23,8 @@ public partial class MainWindowViewModel
 
     public bool SupportsDraftRecovery => _draftStore != null;
     internal bool HasDraftCleanup => !Document.IsModified && Document.Draft != null;
+    internal bool CanCheckpointForSystemShutdown => !Document.IsModified && !HasDraftCleanup && !HasPendingSave ||
+        _draftStore != null && (!Document.IsModified || EditorControl != null);
 
     private void ScheduleDraftCheckpoint()
     {

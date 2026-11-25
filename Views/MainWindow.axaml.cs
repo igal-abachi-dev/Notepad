@@ -26,6 +26,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        if (OperatingSystem.IsWindows() && TryGetPlatformHandle() is { HandleDescriptor: "HWND" })
+            Win32Properties.AddWndProcHookCallback(this, OnWin32Message);
         DataContextChanged += OnDataContextChanged;
         PositionChanged += (_, _) => RememberPlacement();
         SizeChanged += (_, _) => RememberPlacement();
@@ -47,6 +49,11 @@ public partial class MainWindow : Window
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDrop);
     }
+
+    private nint OnWin32Message(nint window, uint message, nint wParam, nint lParam, ref bool handled) =>
+        message == 0x0288 // WM_IME_REQUEST
+            ? Editor.HandleWindowsImeRequest(wParam, lParam, ref handled)
+            : 0;
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {

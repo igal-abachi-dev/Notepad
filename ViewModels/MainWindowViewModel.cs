@@ -139,7 +139,7 @@ public partial class MainWindowViewModel : ObservableObject
         EditorControl.PreservePastedLineEndings = Settings.PreservePastedLineEndings;
         EditorControl.WindowsOnlyLineEndings = Settings.WindowsOnlyLineEndings;
         var restored = _pendingDraftSelection;
-        EditorControl.LoadDocument(content, restoredDraft: restored != null);
+        EditorControl.LoadDocument(content, restoredDraft: restored != null || (Document.IsUntitled && Document.IsModified));
         if (restored != null)
         {
             _pendingDraftSelection = null;

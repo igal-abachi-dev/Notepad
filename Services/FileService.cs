@@ -31,7 +31,14 @@ public class FileService
         return (file.Content, file.Encoding, file.EncodingType, file.LineEnding);
     }
 
-    public virtual async Task<LoadedFile> ReadDocumentAsync(string path, FileEncodingType? requestedEncoding = null, bool windowsOnly = false)
+    public virtual Task<LoadedFile> ReadDocumentAsync(string path, FileEncodingType? requestedEncoding = null, bool windowsOnly = false) =>
+        ReadDocumentCoreAsync(path, requestedEncoding, windowsOnly, replaceInvalidBytes: false);
+
+    internal Task<LoadedFile> ReadDocumentWithReplacementAsync(string path, FileEncodingType? requestedEncoding, bool windowsOnly) =>
+        ReadDocumentCoreAsync(path, requestedEncoding, windowsOnly, replaceInvalidBytes: true);
+
+    private async Task<LoadedFile> ReadDocumentCoreAsync(string path, FileEncodingType? requestedEncoding,
+        bool windowsOnly, bool replaceInvalidBytes)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
             bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
@@ -45,7 +52,13 @@ public class FileService
         var encoding = GetEncoding(encodingType);
 
         int bomLength = GetBomLength(bytes, encodingType);
-        var content = encoding.GetString(bytes, bomLength, bytes.Length - bomLength);
+        Encoding decoder = encoding;
+        if (replaceInvalidBytes)
+        {
+            decoder = (Encoding)encoding.Clone();
+            decoder.DecoderFallback = new DecoderReplacementFallback("\uFFFD");
+        }
+        var content = decoder.GetString(bytes, bomLength, bytes.Length - bomLength);
 
         if (windowsOnly) content = TextLineEndings.Normalize(content, "\r\n");
         var lineEnding = DetectLineEndings(content);

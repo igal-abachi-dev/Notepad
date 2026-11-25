@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 
 namespace AvaloniaNotePad;
 
-internal static class ReleaseSmokeTest
+internal static partial class ReleaseSmokeTest
 {
     public static async Task RunAsync(IClassicDesktopStyleApplicationLifetime desktop, MainWindow window, string reportPath)
     {
@@ -23,15 +23,71 @@ internal static class ReleaseSmokeTest
         {
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             Require(!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported, "The running executable is Native AOT.");
-            var log = await ExerciseDialogsAsync(window, Path.GetDirectoryName(reportPath)!);
+            string directory = Path.GetDirectoryName(reportPath)!;
+            var log = await ExerciseDialogsAsync(window, directory);
+            await ExerciseFilePickerAsync(window, directory);
+            log += Environment.NewLine + "Avalonia Open and Save As passed with integrated encoding selection.";
+            if (OperatingSystem.IsWindows())
+                log += Environment.NewLine + await ExerciseWindowsAsync(window, directory);
             File.WriteAllText(reportPath, log);
-            desktop.Shutdown();
+            if (window.IsVisible) desktop.Shutdown();
         }
         catch (Exception ex)
         {
             File.WriteAllText(reportPath, ex.ToString());
             desktop.Shutdown(1);
         }
+    }
+
+    private static async Task ExerciseFilePickerAsync(MainWindow window, string directory)
+    {
+        var vm = window.ViewModel;
+        string source = Path.Combine(directory, $"picker-input-{Guid.NewGuid():N}.txt");
+        byte[] original = [0, 65, 0, 66];
+        await File.WriteAllBytesAsync(source, original);
+        vm.RecentFiles.Insert(0, source);
+
+        var open = vm.OpenFileCommand.ExecuteAsync(null);
+        var dialog = await WaitForDialog<FilePickerDialog>(window);
+        await WaitForPickerFolderAsync(dialog, directory);
+        var encoding = dialog.FindControl<ComboBox>("EncodingBox")!;
+        Require(encoding.ItemCount == 6 && (encoding.SelectedItem as EncodingDialog.EncodingOption)?.Name == "Auto-detect",
+            "Open did not show Auto-detect and the five explicit encodings.");
+        encoding.SelectedIndex = 3; // UTF-16 BE
+        dialog.FindControl<TextBox>("FileNameBox")!.Text = Path.GetFileName(source);
+        Accept(dialog);
+        await open.WaitAsync(TimeSpan.FromSeconds(5));
+        Require(vm.EditorControl?.Text == "AB" && vm.Document.EncodingType == FileEncodingType.UTF16BE,
+            "Open did not use the file picker's selected encoding.");
+
+        string name = $"picker-output-{Guid.NewGuid():N}";
+        var save = vm.SaveFileAsCommand.ExecuteAsync(null);
+        dialog = await WaitForDialog<FilePickerDialog>(window);
+        await WaitForPickerFolderAsync(dialog, directory);
+        encoding = dialog.FindControl<ComboBox>("EncodingBox")!;
+        Require(encoding.ItemCount == 5 && (encoding.SelectedItem as EncodingDialog.EncodingOption)?.Type == FileEncodingType.UTF16BE,
+            "Save As did not preselect the document encoding.");
+        encoding.SelectedIndex = 3; // UTF-8 with BOM
+        dialog.FindControl<TextBox>("FileNameBox")!.Text = name;
+        Accept(dialog);
+        await save.WaitAsync(TimeSpan.FromSeconds(5));
+        Require((await File.ReadAllBytesAsync(Path.Combine(directory, name + ".txt"))).SequenceEqual(
+            new byte[] { 0xEF, 0xBB, 0xBF, 65, 66 }), "Save As did not use the selected encoding and default extension.");
+        Require((await File.ReadAllBytesAsync(source)).SequenceEqual(original), "Save As modified the source.");
+        await vm.NewFileCommand.ExecuteAsync(null);
+        Require(vm.Document.IsUntitled, "New did not return to an untitled document.");
+    }
+
+    private static async Task WaitForPickerFolderAsync(FilePickerDialog dialog, string directory)
+    {
+        for (int attempt = 0; attempt < 250; attempt++)
+        {
+            if (dialog.FindControl<TextBox>("FolderBox")?.Text == directory &&
+                dialog.FindControl<Button>("AcceptButton")?.IsEnabled == true)
+                return;
+            await Task.Delay(20);
+        }
+        throw new TimeoutException("The Avalonia file picker did not load the test folder.");
     }
 
     private static async Task<string> ExerciseDialogsAsync(MainWindow window, string directory)

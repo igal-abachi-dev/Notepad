@@ -17,6 +17,7 @@ namespace AvaloniaNotePad;
 public partial class App : Application
 {
     private bool _checkingShutdown;
+    private WindowsSessionEnd? _sessionEnd;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -30,11 +31,14 @@ public partial class App : Application
             var args = desktop.Args ?? [];
             string? smokeReport = args is ["--verify-release", var report] ? Path.GetFullPath(report) : null;
             string? smokeSettings = smokeReport == null ? null : smokeReport + ".settings.json";
+            var draftStore = smokeReport == null ? DraftStore.ForCurrentUser() : new DraftStore(smokeReport + ".drafts");
             var viewModel = new MainWindowViewModel(new FileService(), new SearchService(), new SettingsService(smokeSettings),
-                new PrintService(), draftStore: smokeReport == null ? DraftStore.ForCurrentUser() : null);
+                new PrintService(), draftStore: draftStore);
             viewModel.ApplyTheme();
             var main = new MainWindow { DataContext = viewModel };
             desktop.MainWindow = main;
+            if (OperatingSystem.IsWindows())
+                _sessionEnd = WindowsSessionEnd.TryInstall(() => QueryWindowsSessionEnd(desktop), () => EndWindowsSession(desktop));
             if (smokeReport != null)
                 main.Opened += (_, _) => Dispatcher.UIThread.Post(() => _ = ReleaseSmokeTest.RunAsync(desktop, main, smokeReport), DispatcherPriority.Loaded);
             else
@@ -79,6 +83,23 @@ public partial class App : Application
         return (path, encoding, print, null);
     }
 
+    private bool QueryWindowsSessionEnd(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        var windows = desktop.Windows.OfType<MainWindow>().ToArray();
+        if (CanCheckpoint(windows) && CheckpointBeforeSignOut(windows)) return true;
+        Dispatcher.UIThread.Post(() => _ = AskToCloseWindowsAsync(windows));
+        return false;
+    }
+
+    private static void EndWindowsSession(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        var windows = desktop.Windows.OfType<MainWindow>().ToArray();
+        if (CanCheckpoint(windows)) CheckpointBeforeSignOut(windows);
+        foreach (var window in windows)
+            window.ApproveSystemClose();
+        desktop.Shutdown();
+    }
+
     private async void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e)
     {
         if (ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop) return;
@@ -86,8 +107,8 @@ public partial class App : Application
         if (!windows.Any(window => window.ViewModel.Document.IsModified ||
             window.ViewModel.HasPendingSave || window.ViewModel.HasDraftCleanup)) return;
 
-        if (!_checkingShutdown && OperatingSystem.IsWindows() &&
-            windows.All(window => window.ViewModel.SupportsDraftRecovery) && CheckpointBeforeSignOut(windows))
+        if (_sessionEnd == null && !_checkingShutdown && OperatingSystem.IsWindows() &&
+            CanCheckpoint(windows) && CheckpointBeforeSignOut(windows))
         {
             foreach (var window in windows)
                 window.ApproveSystemClose();
@@ -95,6 +116,11 @@ public partial class App : Application
         }
 
         e.Cancel = true;
+        await AskToCloseWindowsAsync(windows);
+    }
+
+    private async Task AskToCloseWindowsAsync(MainWindow[] windows)
+    {
         if (_checkingShutdown) return;
         _checkingShutdown = true;
         try
@@ -106,6 +132,9 @@ public partial class App : Application
         }
         finally { _checkingShutdown = false; }
     }
+
+    private static bool CanCheckpoint(MainWindow[] windows) =>
+        windows.All(window => window.ViewModel.CanCheckpointForSystemShutdown);
 
     private static bool CheckpointBeforeSignOut(MainWindow[] windows)
     {

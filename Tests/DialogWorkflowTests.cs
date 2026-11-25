@@ -86,6 +86,45 @@ public class DialogWorkflowTests
     }
 
     [AvaloniaFact]
+    public async Task OpenInvalidUnicode_RefusalKeepsCurrentBuffer_AcceptanceCreatesAnUnsavedCopy()
+    {
+        using var fixture = new MainWindowFixture();
+        string original = Path.Combine(fixture.Folder, "invalid.txt");
+        byte[] bytes = [0xEF, 0xBB, 0xBF, 0x61, 0xC3];
+        await File.WriteAllBytesAsync(original, bytes);
+        var editor = Assert.IsType<NeoEditor>(fixture.ViewModel.EditorControl);
+        editor.InsertAtCaret("old buffer");
+
+        var refused = fixture.ViewModel.LoadFileAsync(original);
+        var dialog = await WaitForInvalidEncodingPrompt(fixture.Window);
+        dialog.GetVisualDescendants().OfType<Button>().Single(button => !button.IsDefault)
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.False(await refused.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal("old buffer", editor.Text);
+
+        var accepted = fixture.ViewModel.LoadFileAsync(original);
+        DefaultButton(await WaitForInvalidEncodingPrompt(fixture.Window)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.True(await accepted.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal("a\uFFFD", editor.Text);
+        Assert.True(editor.IsModified);
+        Assert.True(fixture.ViewModel.Document.IsUntitled);
+        Assert.Null(fixture.ViewModel.Document.SavedFileVersion);
+        Assert.Equal(FileEncodingType.UTF8, fixture.ViewModel.Document.SaveEncodingType);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(original));
+    }
+
+    private static async Task<Window> WaitForInvalidEncodingPrompt(Window owner)
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            if (owner.OwnedWindows.FirstOrDefault(window => window.Title == "Invalid text encoding") is { } dialog)
+                return dialog;
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("The invalid encoding prompt did not open.");
+    }
+
+    [AvaloniaFact]
     public async Task RecentMenu_OpensTheSpecificFileAndMainWindowBindingsUseTheEditorSettings()
     {
         using var fixture = new MainWindowFixture();

@@ -1,11 +1,14 @@
 ﻿using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Automation.Peers;
 using Avalonia.Automation.Provider;
 using Avalonia.Input.TextInput;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
+using Avalonia.Threading;
 using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Notepad.NeoEdit;
 
@@ -17,18 +20,158 @@ public sealed partial class NeoEditor
 
     protected override AutomationPeer OnCreateAutomationPeer() => new EditorAutomationPeer(this);
 
+    private void NotifyAutomationValueChanged()
+    {
+        if (ControlAutomationPeer.FromElement(this) is EditorAutomationPeer peer)
+            peer.NotifyValueChanged();
+    }
+
     private sealed class EditorAutomationPeer(NeoEditor editor) : ControlAutomationPeer(editor), IValueProvider
     {
+        private DispatcherTimer? _valueTimer;
+        private string? _reportedValue;
+
         protected override string GetClassNameCore() => nameof(NeoEditor);
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
         public bool IsReadOnly => !editor.IsEffectivelyEnabled;
-        public string Value => editor.GetText();
+        public string Value
+        {
+            get
+            {
+                string text = editor.GetText();
+                if (OperatingSystem.IsWindows() && UiaClientsAreListening()) _reportedValue ??= text;
+                return text;
+            }
+        }
 
         public void SetValue(string? value)
         {
             if (IsReadOnly) throw new InvalidOperationException("The editor is disabled.");
             editor.ReplaceRange(0, editor._doc.Length, value ?? "");
         }
+
+        public void NotifyValueChanged()
+        {
+            if (!OperatingSystem.IsWindows() || !UiaClientsAreListening())
+            {
+                _reportedValue = null;
+                return;
+            }
+            if (_valueTimer == null)
+            {
+                _valueTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+                _valueTimer.Tick += (_, _) =>
+                {
+                    _valueTimer.Stop();
+                    if (!UiaClientsAreListening())
+                    {
+                        _reportedValue = null;
+                        return;
+                    }
+                    string? previous = _reportedValue;
+                    _reportedValue = editor.GetText();
+                    if (!ReferenceEquals(previous, _reportedValue))
+                        RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, previous, _reportedValue);
+                };
+            }
+            if (!_valueTimer.IsEnabled) _valueTimer.Start();
+        }
+
+        [DllImport("UIAutomationCore.dll", ExactSpelling = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UiaClientsAreListening();
+    }
+
+    internal nint HandleWindowsImeRequest(nint request, nint data, ref bool handled)
+    {
+        const int reconvertString = 4; // IMR_RECONVERTSTRING
+        const int queryCharacterPosition = 6; // IMR_QUERYCHARPOSITION
+        const int documentFeed = 7; // IMR_DOCUMENTFEED
+        if (!IsFocused) return 0;
+        if (request == reconvertString || request == documentFeed)
+        {
+            handled = true;
+            return FillImeText(data, request == reconvertString);
+        }
+        if (request != queryCharacterPosition) return 0;
+        handled = true;
+        if (data == 0 || Marshal.ReadInt32(data) < Marshal.SizeOf<ImeCharacterPosition>()) return 0;
+        var position = Marshal.PtrToStructure<ImeCharacterPosition>(data);
+        if (position.CharacterOffset > _preeditText.Length) return 0;
+
+        var location = GetCompositionCaret((int)position.CharacterOffset);
+        var top = this.PointToScreen(location.TopLeft);
+        var bottom = this.PointToScreen(location.BottomLeft);
+        var areaStart = this.PointToScreen(default);
+        var areaEnd = this.PointToScreen(new Point(Bounds.Width, Bounds.Height));
+        position.X = top.X;
+        position.Y = top.Y;
+        position.LineHeight = (uint)Math.Max(1, bottom.Y - top.Y);
+        position.Left = areaStart.X;
+        position.Top = areaStart.Y;
+        position.Right = areaEnd.X;
+        position.Bottom = areaEnd.Y;
+        Marshal.StructureToPtr(position, data, fDeleteOld: false);
+        return 1;
+    }
+
+    private nint FillImeText(nint buffer, bool reconvertSelection)
+    {
+        // Reconversion starts with an explicit, bounded selection. Ordinary composition
+        // still uses Avalonia's native input method and replaces that selection on commit.
+        string text;
+        int selectionStart;
+        int selectionLength;
+        if (reconvertSelection)
+        {
+            if (_preeditText.Length != 0 || SelectionLength is 0 or > 512) return 0;
+            text = GetSelectedText();
+            if (text.AsSpan().IndexOfAny('\r', '\n', '\0') >= 0) return 0;
+            selectionStart = 0;
+            selectionLength = text.Length;
+        }
+        else
+        {
+            var (start, end) = _inputMethod.Context;
+            text = _doc.GetTextInRange(start, end - start);
+            if (text.Contains('\0')) return 0;
+            selectionStart = Math.Clamp(SelectionStart - start, 0, text.Length);
+            selectionLength = Math.Clamp(SelectionStart + SelectionLength - start, selectionStart, text.Length) - selectionStart;
+        }
+
+        int headerSize = Marshal.SizeOf<ImeText>();
+        int size = headerSize + (text.Length + 1) * sizeof(char);
+        if (buffer == 0) return size;
+        if (Marshal.ReadInt32(buffer) < size) return 0;
+        Marshal.StructureToPtr(new ImeText
+        {
+            Size = (uint)size,
+            TextLength = (uint)text.Length,
+            TextOffset = (uint)headerSize,
+            CompositionLength = (uint)selectionLength,
+            CompositionOffset = (uint)(selectionStart * sizeof(char)),
+            TargetLength = (uint)selectionLength,
+            TargetOffset = (uint)(selectionStart * sizeof(char))
+        }, buffer, fDeleteOld: false);
+        Marshal.Copy(text.ToCharArray(), 0, buffer + headerSize, text.Length);
+        Marshal.WriteInt16(buffer, size - sizeof(char), 0);
+        return size;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ImeCharacterPosition
+    {
+        public uint Size, CharacterOffset;
+        public int X, Y;
+        public uint LineHeight;
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ImeText
+    {
+        public uint Size, Version, TextLength, TextOffset;
+        public uint CompositionLength, CompositionOffset, TargetLength, TargetOffset;
     }
 
     private void SetComposition(string? text, int? position = null)
@@ -55,13 +198,23 @@ public sealed partial class NeoEditor
     private Point CompositionOrigin(TextLayout layout, Point origin) =>
         origin.WithX(Math.Max(TextLeft, Math.Min(origin.X, Bounds.Width - layout.WidthIncludingTrailingWhitespace - Padding)));
 
+    private Rect GetCompositionCaret(int characterOffset)
+    {
+        var caret = CaretGeometry().Translate(new Vector(TextLeft - Offset.X, -Offset.Y));
+        if (_preeditText.Length == 0) return caret;
+        using var layout = MakeCompositionLayout();
+        var origin = CompositionOrigin(layout, caret.TopLeft);
+        var preedit = layout.HitTestTextPosition(characterOffset);
+        return new Rect(origin.X + preedit.X, origin.Y + preedit.Y, 1, LineHeight);
+    }
+
     private sealed class EditorInputMethod(NeoEditor editor) : TextInputMethodClient
     {
         public override Visual TextViewVisual => editor;
         public override bool SupportsPreedit => true;
         public override bool SupportsSurroundingText => true;
 
-        private (int Start, int End) Context
+        public (int Start, int End) Context
         {
             get
             {
@@ -98,18 +251,7 @@ public sealed partial class NeoEditor
             }
         }
 
-        public override Rect CursorRectangle
-        {
-            get
-            {
-                var caret = editor.CaretGeometry().Translate(new Vector(editor.TextLeft - editor.Offset.X, -editor.Offset.Y));
-                if (editor._preeditText.Length == 0) return caret;
-                using var layout = editor.MakeCompositionLayout();
-                var origin = editor.CompositionOrigin(layout, caret.TopLeft);
-                var preedit = layout.HitTestTextPosition(editor._preeditCaret);
-                return new Rect(origin.X + preedit.X, origin.Y + preedit.Y, 1, editor.LineHeight);
-            }
-        }
+        public override Rect CursorRectangle => editor.GetCompositionCaret(editor._preeditCaret);
 
         public override void SetPreeditText(string? text) => SetPreeditText(text, null);
 

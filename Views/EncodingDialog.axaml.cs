@@ -23,17 +23,16 @@ public partial class EncodingDialog : Window
     {
         InitializeComponent();
         PromptText.Text = forOpening ? "Select the file’s encoding." : "Select the encoding to save with.";
-        Options = new List<EncodingOption>
-        {
-            new(FileEncodingType.ANSI, "ANSI"),
-            new(FileEncodingType.UTF16LE, "UTF-16 LE"),
-            new(FileEncodingType.UTF16BE, "UTF-16 BE"),
-            new(FileEncodingType.UTF8BOM, "UTF-8 with BOM"),
-            new(FileEncodingType.UTF8, "UTF-8")
-        };
-        if (forOpening) Options.Insert(0, new(null, "Auto-detect"));
+        Options = CreateOptions(forOpening);
         EncodingCombo.ItemsSource = Options;
         EncodingCombo.SelectedItem = Options.FirstOrDefault(o => o.Type == initial) ?? Options[0];
+    }
+
+    internal static List<EncodingOption> CreateOptions(bool forOpening)
+    {
+        var options = FileEncodingOptions.Choices.Select(choice => new EncodingOption(choice.Type, choice.Name)).ToList();
+        if (forOpening) options.Insert(0, new(null, "Auto-detect"));
+        return options;
     }
 
     internal void SetPrompt(string text) => PromptText.Text = text;
