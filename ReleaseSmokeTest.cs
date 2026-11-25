@@ -1,4 +1,6 @@
 ﻿using Avalonia;
+using Avalonia.Automation.Peers;
+using Avalonia.Automation.Provider;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
@@ -47,12 +49,18 @@ internal static class ReleaseSmokeTest
         var options = encodingDialog.FindControl<ComboBox>("EncodingCombo")!;
         Require(options.ItemCount == 5 && options.SelectedItem is EncodingDialog.EncodingOption, "Encoding choices rendered.");
         options.SelectedIndex = 2;
+        encodingDialog.UpdateLayout();
+        Require(options.GetVisualDescendants().OfType<TextBlock>().Any(label => label.Text == "UTF-16 BE"),
+            "The selected encoding label displays its name.");
         Accept(encodingDialog);
         await selectEncoding.WaitAsync(TimeSpan.FromSeconds(5));
         Require(vm.Document.SaveEncodingType == FileEncodingType.UTF16BE, "Encoding dialog applied UTF-16 BE.");
 
         var file = Path.Combine(directory, $"smoke-input-{Guid.NewGuid():N}.txt");
         vm.EditorControl!.LoadDocument("first\r\nsecond\r\nthird");
+        var peer = ControlAutomationPeer.CreatePeerForElement(vm.EditorControl);
+        Require(peer?.GetProvider<IValueProvider>()?.Value == "first\r\nsecond\r\nthird",
+            "The published editor exposes the document through its automation peer.");
         var goTo = vm.GoToLineCommand.ExecuteAsync(null);
         var goToDialog = await WaitForDialog<GoToLineDialog>(window);
         var range = goToDialog.FindControl<TextBlock>("InfoText");
@@ -72,7 +80,7 @@ internal static class ReleaseSmokeTest
             label.Text?.StartsWith("Cannot open ", StringComparison.Ordinal) == true), "File error dialog displays its message.");
         Accept(message);
         Require(!await missing.WaitAsync(TimeSpan.FromSeconds(5)), "File error did not replace the open document.");
-        return "Native AOT smoke passed: blank startup, themes, Encoding, Go To Line validation and navigation, file error dialog." +
+        return "Native AOT smoke passed: blank startup, themes, Encoding, Go To Line, file error dialog, automation value." +
             Environment.NewLine + $"First focused blank window: {focusedMiB:F1} MiB working set.";
     }
 

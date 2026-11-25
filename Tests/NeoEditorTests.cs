@@ -316,6 +316,34 @@ public class NeoEditorTests
         finally { window.Close(); }
     }
 
+    [AvaloniaFact]
+    public void InputMethod_CancelThenCommitOverMultilineSelection_PreservesUndoOrientation()
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument("a\r\nb\nc");
+            editor.SetSelection(5, -4);
+            var request = new TextInputMethodClientRequestedEventArgs { RoutedEvent = InputElement.TextInputMethodClientRequestedEvent };
+            editor.RaiseEvent(request);
+            var client = Assert.IsAssignableFrom<TextInputMethodClient>(request.Client);
+            client.SetPreeditText("\u65E5", 1);
+            client.SetPreeditText(null);
+            Assert.Equal("a\r\nb\nc", editor.Text);
+            Assert.Equal((5, 1, 4), (editor.SelectionAnchor, editor.CaretOffset, editor.SelectionLength));
+            Assert.False(editor.IsModified);
+            client.SetPreeditText("\u672C", 1);
+            window.KeyTextInput("\u672C");
+            Assert.Equal("a\u672Cc", editor.Text);
+            editor.Undo();
+            Assert.Equal("a\r\nb\nc", editor.Text);
+            Assert.Equal((5, 1, 4), (editor.SelectionAnchor, editor.CaretOffset, editor.SelectionLength));
+            Assert.False(editor.IsModified);
+        }
+        finally { window.Close(); }
+    }
+
     private static Window Show(NeoEditor editor)
     {
         var window = new Window { Width = 300, Height = 200, Content = editor };
