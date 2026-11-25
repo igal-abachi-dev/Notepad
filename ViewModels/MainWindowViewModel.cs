@@ -1,4 +1,4 @@
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media;
@@ -11,12 +11,11 @@ using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.Views;
 using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.Text;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -32,9 +31,10 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SettingsService _settingsService;
     private readonly PrintService _printService;
     private FindReplaceDialog? _findReplaceDialog;
-    private bool _statusBarBeforeWrap = true;
+    private readonly TimeProvider _timeProvider;
     private long _editVersion;
     private string _loadedContent = "";
+    internal Window? OwnerWindow { get; set; }
 
     [ObservableProperty]
     private DocumentModel _document = new();
@@ -44,9 +44,6 @@ public partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     private SearchSettings _searchSettings = new();
-
-    //[ObservableProperty]
-    //private TextDocument _textDocument = new(/*"hello World".ToCharArray()*/);
 
     [ObservableProperty]
     private SyntaxLanguage _currentLanguage = SyntaxLanguage.Plain;
@@ -69,7 +66,10 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _lineEndingText = "CRLF";
 
-    public ObservableCollection<string> RecentFiles { get; } = new();
+    [ObservableProperty]
+    private string? _settingsWarning;
+
+    public ObservableCollection<string> RecentFiles { get; }
 
     // Reference to your custom control
     public NeoEditor? EditorControl { get; set; }
@@ -78,52 +78,51 @@ public partial class MainWindowViewModel : ObservableObject
         FileService fileService,
         SearchService searchService,
         SettingsService settingsService,
-        PrintService printService)
+        PrintService printService,
+        TimeProvider? timeProvider = null,
+        DraftStore? draftStore = null)
     {
         _fileService = fileService;
         _searchService = searchService;
         _settingsService = settingsService;
         _printService = printService;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _draftStore = draftStore;
+        var persisted = _settingsService.Load();
+        Settings = persisted.Editor;
+        SearchSettings = persisted.Search;
+        PageSetupSettings = persisted.PageSetup;
+        Document = CreateUntitledDocument();
 
-        _settings = _settingsService.LoadEditorSettings();
-        _searchSettings = _settingsService.LoadSearchSettings();
-        _pageSetupSettings = _settingsService.LoadPageSetupSettings();
-        _statusBarBeforeWrap = _settings.ShowStatusBar;
-        if (_settings.WordWrap)
-        {
-            _settings.ShowStatusBar = false;
-        }
-        Document.Encoding = _fileService.GetEncoding(_settings.LastEncoding);
-        Document.EncodingType = _settings.LastEncoding;
-        Document.SaveEncodingType = _settings.LastEncoding;
-
-        foreach (var path in _settingsService.LoadRecentFiles())
-        {
-            RecentFiles.Add(path);
-        }
+        RecentFiles = _settingsService.GetSharedRecents(persisted.RecentFiles);
 
         OnPropertyChanged(nameof(EditorFontSize));
         OnPropertyChanged(nameof(EditorFontWeight));
         OnPropertyChanged(nameof(EditorFontStyle));
         OnPropertyChanged(nameof(CanUseGoToLine));
-        OnPropertyChanged(nameof(CanToggleStatusBar));
         UpdateEncodingDisplay();
     }
 
     public void InitializeEditor(NeoEditor editor)
     {
         if (EditorControl == editor) return;
-        if (EditorControl != null)
-        {
-            _loadedContent = EditorControl.GetText();
-            EditorControl.TextChanged -= OnEditorTextChanged;
-            EditorControl.CaretMoved -= OnEditorCaretMoved;
-        }
+        DetachEditor();
 
         EditorControl = editor;
         editor.TextChanged += OnEditorTextChanged;
         editor.CaretMoved += OnEditorCaretMoved;
+        editor.ZoomRequested += OnEditorZoomRequested;
         ResetEditor(_loadedContent);
+    }
+
+    internal void DetachEditor()
+    {
+        if (EditorControl is not { } editor) return;
+        _loadedContent = editor.GetText();
+        editor.TextChanged -= OnEditorTextChanged;
+        editor.CaretMoved -= OnEditorCaretMoved;
+        editor.ZoomRequested -= OnEditorZoomRequested;
+        EditorControl = null;
     }
 
     private void ResetEditor(string content)
@@ -131,230 +130,86 @@ public partial class MainWindowViewModel : ObservableObject
         _loadedContent = content;
         if (EditorControl == null) return;
 
-        EditorControl.NewLine = Document.LineEnding switch
+        EditorControl.NewLine = Settings.WindowsOnlyLineEndings ? "\r\n" : Document.LineEnding switch
         {
             LineEndingStyle.LF => "\n",
             LineEndingStyle.CR => "\r",
             _ => "\r\n"
         };
-        EditorControl.LoadDocument(content);
+        EditorControl.PreservePastedLineEndings = Settings.PreservePastedLineEndings;
+        EditorControl.WindowsOnlyLineEndings = Settings.WindowsOnlyLineEndings;
+        var restored = _pendingDraftSelection;
+        EditorControl.LoadDocument(content, restoredDraft: restored != null);
+        if (restored != null)
+        {
+            _pendingDraftSelection = null;
+            int anchor = Math.Clamp(restored.Anchor, 0, EditorControl.TextLength);
+            int caret = Math.Clamp(restored.Caret, 0, EditorControl.TextLength);
+            EditorControl.SetSelection(anchor, caret - anchor);
+            ScheduleDraftCheckpoint();
+        }
+        if (_pendingLogAppend is { } append)
+        {
+            _pendingLogAppend = null;
+            EditorControl.ReplaceRange(content.Length, 0, append);
+        }
     }
 
-    private void OnEditorCaretMoved(object? sender, (int Line, int Column) position) =>
+    private void OnEditorCaretMoved(object? sender, (int Line, int Column) position)
+    {
         UpdateCaretPosition(position.Line, position.Column);
+        CutCommand.NotifyCanExecuteChanged();
+        CopyCommand.NotifyCanExecuteChanged();
+        DeleteCommand.NotifyCanExecuteChanged();
+        SearchWithBingCommand.NotifyCanExecuteChanged();
+        UndoCommand.NotifyCanExecuteChanged();
+        RedoCommand.NotifyCanExecuteChanged();
+    }
 
     private void OnEditorTextChanged(object? sender, EventArgs e)
     {
         _editVersion++;
-        if (!Document.IsModified)
+        if (EditorControl is { } editor && Document.IsModified != editor.IsModified)
         {
-            Document.IsModified = true;
+            Document.IsModified = editor.IsModified;
             OnPropertyChanged(nameof(Document));
         }
+        ScheduleDraftCheckpoint();
         UpdateStatus();
     }
 
-    public double EditorFontSize => Settings.FontSize * Settings.ZoomLevel / 100.0;
+    private void OnEditorZoomRequested(object? sender, int direction) => SetZoom(Settings.ZoomLevel + direction * 10);
+
+    public double EditorFontSize => Settings.FontSize * 96.0 / 72.0 * Settings.ZoomLevel / 100.0;
     public FontWeight EditorFontWeight => Settings.IsBold ? FontWeight.Bold : FontWeight.Normal;
     public FontStyle EditorFontStyle => Settings.IsItalic ? FontStyle.Italic : FontStyle.Normal;
-    public bool CanToggleStatusBar => !Settings.WordWrap;
-
-    // --- Commands ---
-
-    /// <summary>
-    /// Maps to: Command ID 1, function_14000fe24(1)
-    /// </summary>
-    [RelayCommand]
-    private async Task NewFileAsync()
-    {
-        if (!await CheckSaveChangesAsync()) return;
-
-        CurrentLanguage = SyntaxLanguage.Plain; // Reset to Plain
-        Document = new DocumentModel
-        {
-            Encoding = _fileService.GetEncoding(_settings.LastEncoding),
-            EncodingType = _settings.LastEncoding,
-            SaveEncodingType = _settings.LastEncoding
-        };
-        ResetEditor("");
-        UpdateEncodingDisplay();
-        UpdateStatus();
-        UpdateCaretPosition(1, 1);
-    }
-
-    /// <summary>
-    /// Maps to: Command ID 2, function_140008c18
-    /// </summary>
-    [RelayCommand]
-    public async Task OpenFileAsync(string? path = null)
-    {
-        if (!await CheckSaveChangesAsync()) return;
-
-        if (!string.IsNullOrEmpty(path))
-        {
-            await LoadFileAsync(path);
-            return;
-        }
-
-        // Use Avalonia's file picker
-        var dialog = new OpenFileDialog
-        {
-            Title = "Open",
-            Filters = new List<FileDialogFilter>
-            {
-                new() { Name = "Text Documents", Extensions = { "txt" } },
-                new() { Name = "All Files", Extensions = { "*" } }
-            }
-        };
-
-        var result = await dialog.ShowAsync(GetMainWindow());
-        if (result?.Length > 0)
-        {
-            await LoadFileAsync(result[0]);
-        }
-    }
-
-    public async Task LoadFileAsync(string path)
-    {
-        try
-        {
-            var previousDocument = Document;
-            long previousVersion = _editVersion;
-            var (content, encoding, encodingType, lineEnding) = await _fileService.LoadFileAsync(path);
-            if (Document != previousDocument || _editVersion != previousVersion) return;
-
-            Document = new DocumentModel
-            {
-                FilePath = path,
-                IsUntitled = false,
-                IsModified = false,
-                Encoding = encoding,
-                EncodingType = encodingType,
-                SaveEncodingType = encodingType,
-                LineEnding = lineEnding
-            };
-            ResetEditor(content);
-
-            // Auto-Detect Language
-            CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
-
-            _settings.LastEncoding = encodingType;
-            _settingsService.SaveEditorSettings(_settings);
-            UpdateEncodingDisplay();
-            UpdateStatus();
-            AddRecentFile(path);
-        }
-        catch (Exception ex)
-        {
-            await ShowErrorAsync($"Cannot open file: {ex.Message}");
-        }
-    }
-
-
-    /// <summary>
-    /// Maps to: Command ID 3, function_14000b874
-    /// </summary>
-    [RelayCommand]
-    private async Task SaveFileAsync()
-    {
-        if (Document.IsUntitled)
-        {
-            await SaveFileAsAsync();
-            return;
-        }
-
-        await SaveToFileAsync(Document.FilePath, Document.SaveEncodingType);
-    }
-
-    /// <summary>
-    /// Maps to: Command ID 4
-    /// </summary>
-    [RelayCommand]
-    private async Task SaveFileAsAsync()
-    {
-        var dialog = new SaveFileDialog //todo custom save file dialog
-        {
-            Title = "Save As",
-            DefaultExtension = "txt",
-            Filters = new List<FileDialogFilter>
-            {
-                new() { Name = "Text Documents", Extensions = { "txt" } },
-                new() { Name = "All Files", Extensions = { "*" } }
-            }
-        };
-
-        if (!Document.IsUntitled)
-        {
-            dialog.InitialFileName = Path.GetFileName(Document.FilePath);
-            dialog.Directory = Path.GetDirectoryName(Document.FilePath);
-        }
-
-        var result = await dialog.ShowAsync(GetMainWindow());
-        if (string.IsNullOrEmpty(result))
-        {
-            return;
-        }
-
-        var encodingDialog = new EncodingDialog(Document.SaveEncodingType);
-        var encodingSelection = await encodingDialog.ShowDialog<FileEncodingType?>(GetMainWindow());
-        if (encodingSelection.HasValue)
-        {
-            await SaveToFileAsync(result, encodingSelection.Value);
-        }
-    }
-
-    private async Task SaveToFileAsync(string path, FileEncodingType encodingType)
-    {
-        try
-        {
-            if (EditorControl == null) return;
-            var document = Document;
-            long savedVersion = _editVersion;
-            string currentContent = EditorControl.GetText();
-
-            await _fileService.SaveFileAsync(path, currentContent, encodingType, document.LineEnding);
-            if (Document != document) return;
-
-            document.FilePath = path;
-            document.IsUntitled = false;
-            document.IsModified = _editVersion != savedVersion;
-            document.EncodingType = encodingType;
-            document.SaveEncodingType = encodingType;
-            document.Encoding = _fileService.GetEncoding(encodingType);
-
-            _settings.LastEncoding = encodingType;
-            _settingsService.SaveEditorSettings(_settings);
-            OnPropertyChanged(nameof(Document));
-            AddRecentFile(path);
-            UpdateEncodingDisplay();
-        }
-        catch (Exception ex)
-        {
-            await ShowErrorAsync($"Cannot save file: {ex.Message}");
-        }
-    }
 
     // ==================== Edit Commands ====================
 
     /// <summary>
     /// Maps to: Command ID 768 (EM_UNDO)
     /// </summary>
-    [RelayCommand]
+    private bool CanUndo() => EditorControl?.CanUndo == true;
+    private bool CanRedo() => EditorControl?.CanRedo == true;
+
+    [RelayCommand(CanExecute = nameof(CanUndo))]
     private void Undo() => EditorControl?.Undo();
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRedo))]
     private void Redo() => EditorControl?.Redo();
 
     /// <summary>
     /// Maps to: Command ID 769 (WM_CUT)
     /// </summary>
-    [RelayCommand]
+    private bool HasSelection() => EditorControl?.SelectionLength > 0;
+
+    [RelayCommand(CanExecute = nameof(HasSelection))]
     private Task CutAsync() => RunClipboardCommandAsync(editor => editor.CutAsync());
 
     /// <summary>
     /// Maps to: Command ID 770 (WM_COPY)
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasSelection))]
     private Task CopyAsync() => RunClipboardCommandAsync(editor => editor.CopyAsync());
 
     /// <summary>
@@ -380,7 +235,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// Maps to: Command ID 20
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasSelection))]
     private void Delete()
     {
         EditorControl?.DeleteSelection();
@@ -398,11 +253,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void InsertDateTime()
     {
-        var now = DateTime.Now;
-        var culture = CultureInfo.CurrentCulture;
-        var dateTime = $"{now.ToString("d", culture)} {now.ToString("t", culture)}";
-
-        EditorControl?.InsertAtCaret(dateTime);
+        EditorControl?.InsertAtCaret(FormatTimeDate(_timeProvider.GetLocalNow().DateTime));
     }
 
     // ==================== Find/Replace ====================
@@ -428,80 +279,91 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task ShowPageSetupDialog()
     {
-        var dialog = new PageSetupDialog(PageSetupSettings);
+        var dialog = new PageSetupDialog(PageSetupSettings, Settings, Document.FileName, EditorControl?.GetText() ?? _loadedContent);
         var result = await dialog.ShowDialog<PageSetupSettings?>(GetMainWindow());
         if (result != null)
         {
             PageSetupSettings = result;
-            _settingsService.SavePageSetupSettings(PageSetupSettings);
+            PersistSettings();
         }
     }
 
     [RelayCommand]
-    private async Task PrintAsync()
-    {
-        var pages = _printService.Paginate(
-            EditorControl.GetText(),
-            Document,
-            PageSetupSettings,
-            charsPerLine: 80,
-            linesPerPage: 50);
+    private async Task PrintAsync() => await PrintDocumentAsync(direct: false);
 
-        await MessageBoxManager.GetMessageBoxStandard(
-            "Notepad",
-            $"Prepared {pages.Count} page(s) for printing (platform-specific rendering not yet implemented).",
-            ButtonEnum.Ok).ShowAsync();
-    }
-
-    [RelayCommand]
-    private async Task OnExitAsync()
+    private async Task<bool> PrintDocumentAsync(bool direct)
     {
-        //if (await CheckSaveChangesAsync())
+        if (EditorControl is not { } editor || OwnerWindow == null) return false;
+        if (!OperatingSystem.IsWindows() || OwnerWindow.TryGetPlatformHandle() is not { } handle)
         {
-            //SaveSessionSettings();
-            GetMainWindow().Close();
+            await ShowErrorAsync("Printing is available on Windows.");
+            return false;
         }
-    } 
+        if (!PageSetupSettings.HasValidMargins())
+        {
+            await ShowErrorAsync("Adjust the margins in Page Setup before printing.");
+            return false;
+        }
+        try
+        {
+            return await _printService.PrintAsync(handle.Handle, Document.FileName, editor.GetText(),
+                PageSetupSettings, Settings, direct);
+        }
+        catch (Exception ex) when (IsFileError(ex) || ex is Win32Exception)
+        {
+            await ShowErrorAsync($"Cannot print. {ex.Message}");
+            return false;
+        }
+    }
+
+    [RelayCommand]
+    private void Exit() => OwnerWindow?.Close();
 
     /// <summary>
     /// Maps to: Command ID 28 (F3)
     /// </summary>
     [RelayCommand]
-    private async Task FindNext()
-    {
-        await FindCoreAsync(reverse: false);
-    }
+    private Task FindNext() => RepeatFindAsync(reverse: false);
 
     /// <summary>
     /// Maps to: Shift+F3 (reverse find)
     /// </summary>
     [RelayCommand]
-    private async Task FindPrevious()
+    private Task FindPrevious() => RepeatFindAsync(reverse: true);
+
+    private Task RepeatFindAsync(bool reverse)
     {
-        await FindCoreAsync(reverse: true);
+        if (!string.IsNullOrEmpty(SearchSettings.SearchString)) return FindCoreAsync(reverse);
+        ShowFindOrReplaceDialog(findMode: true);
+        return Task.CompletedTask;
     }
 
+    internal Task FindFromDialogAsync(bool findMode) => FindCoreAsync(findMode && SearchSettings.SearchUp);
 
-    private Task FindCoreAsync(bool reverse) => RunSearchAsync(async editor =>
+    private Task FindCoreAsync(bool reverse) => RunSearchAsync(editor =>
     {
-        bool searchUp = reverse != SearchSettings.SearchUp;
-        var (result, _) = searchUp
+        UpdateStatus();
+        var (result, wrapped) = reverse
             ? _searchService.FindPrevious(editor, SearchSettings)
             : _searchService.FindNext(editor, SearchSettings);
 
         if (result != null)
         {
             editor.SetSelection(result.StartOffset, result.Length);
-            return;
+            if (wrapped) StatusText += reverse ? "    Search wrapped to bottom" : "    Search wrapped to top";
+            return Task.CompletedTask;
         }
 
-        await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
+        return ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
     });
 
     [RelayCommand]
     private Task ReplaceNext() => RunSearchAsync(async editor =>
     {
-        if (_searchService.ReplaceNext(editor, SearchSettings) == 0)
+        UpdateStatus();
+        int replaced = _searchService.ReplaceNext(editor, SearchSettings, out bool found, out bool wrapped);
+        if (wrapped) StatusText += "    Search wrapped";
+        if (replaced == 0 && !found)
             await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
     });
 
@@ -509,8 +371,7 @@ public partial class MainWindowViewModel : ObservableObject
     private Task ReplaceAll() => RunSearchAsync(async editor =>
     {
         int count = _searchService.ReplaceAll(editor, SearchSettings);
-        await MessageBoxManager.GetMessageBoxStandard("Notepad", $"Replaced {count} occurrence(s).", ButtonEnum.Ok)
-            .ShowAsync();
+        await ShowMessageAsync("Notepad", $"Replaced {count} occurrence(s).", ButtonEnum.Ok);
     });
 
     private async Task RunSearchAsync(Func<NeoEditor, Task> operation)
@@ -529,6 +390,10 @@ public partial class MainWindowViewModel : ObservableObject
         {
             await ShowErrorAsync("The regular expression took too long. Try a simpler pattern.");
         }
+        catch (ArgumentException ex)
+        {
+            await ShowErrorAsync($"Cannot apply the search replacement. {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -538,7 +403,7 @@ public partial class MainWindowViewModel : ObservableObject
     private async Task GoToLineAsync()
     {
         if (Settings.WordWrap || EditorControl == null) return;
-        var dialog = new GoToLineDialog(EditorControl.LineCount); // Use NeoEditor LineCount
+        var dialog = new GoToLineDialog(EditorControl.LineCount, CaretLine);
         var result = await dialog.ShowDialog<int?>(GetMainWindow());
 
         if (result.HasValue)
@@ -552,25 +417,30 @@ public partial class MainWindowViewModel : ObservableObject
     // --- Misc ---
     private void ShowFindOrReplaceDialog(bool findMode)
     {
+        if (OwnerWindow is not { } owner) return;
+        if (_findReplaceDialog != null && _findReplaceDialog.DataContext is FindReplaceViewModel current &&
+            current.IsFindMode == findMode)
+        {
+            _findReplaceDialog.Activate();
+            _findReplaceDialog.FocusQuery();
+            return;
+        }
+        if (EditorControl?.SelectionLength is > 0 and <= 127)
+        {
+            string seed = EditorControl.GetSelectedText();
+            if (!seed.Contains('\r') && !seed.Contains('\n')) SearchSettings.SearchString = seed;
+        }
         if (_findReplaceDialog != null)
         {
             _findReplaceDialog.DataContext = new FindReplaceViewModel(this, findMode);
-            _findReplaceDialog.Title = findMode ? "Find" : "Replace";
-            if (!_findReplaceDialog.IsVisible)
-            {
-                _findReplaceDialog.Show(GetMainWindow());
-            }
-            else
-            {
-                _findReplaceDialog.Activate();
-            }
-
+            _findReplaceDialog.Activate();
+            _findReplaceDialog.FocusQuery();
             return;
         }
 
         _findReplaceDialog = new FindReplaceDialog(this, findMode);
         _findReplaceDialog.Closed += (_, _) => _findReplaceDialog = null;
-        _findReplaceDialog.Show(GetMainWindow());
+        _findReplaceDialog.Show(owner);
     }
 
     // ==================== Format Commands ====================
@@ -583,21 +453,9 @@ public partial class MainWindowViewModel : ObservableObject
     {
         Settings.WordWrap = !Settings.WordWrap;
 
-        if (Settings.WordWrap)
-        {
-            _statusBarBeforeWrap = Settings.ShowStatusBar;
-            Settings.ShowStatusBar = false;
-        }
-        else
-        {
-            Settings.ShowStatusBar = _statusBarBeforeWrap;
-        }
-
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(CanUseGoToLine));
-        OnPropertyChanged(nameof(CanToggleStatusBar));
-        _settingsService.SaveEditorSettings(Settings);
-        UpdateStatus();
+        PersistSettings();
     }
 
     /// <summary>
@@ -606,28 +464,20 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task ChangeFontAsync()
     {
-        // Show font picker dialog
-        // (Avalonia doesn't have built-in font dialog, need custom)
-        var dialog = new FontDialog
-        {
-            FontFamily = Settings.FontFamily,
-            FontSize = Settings.FontSize,
-            IsBold = Settings.IsBold,
-            IsItalic = Settings.IsItalic
-        };
+        var dialog = new FontDialog(Settings);
 
         var result = await dialog.ShowDialog<bool>(GetMainWindow());
         if (result)
         {
-            Settings.FontFamily = dialog.FontFamily;
-            Settings.FontSize = dialog.FontSize;
+            Settings.FontFamily = dialog.SelectedFamily;
+            Settings.FontSize = dialog.SelectedSize;
             Settings.IsBold = dialog.IsBold;
             Settings.IsItalic = dialog.IsItalic;
             OnPropertyChanged(nameof(Settings));
             OnPropertyChanged(nameof(EditorFontSize));
             OnPropertyChanged(nameof(EditorFontWeight));
             OnPropertyChanged(nameof(EditorFontStyle));
-            _settingsService.SaveEditorSettings(Settings);
+            PersistSettings();
         }
     }
 
@@ -639,63 +489,94 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleStatusBar()
     {
-        if (Settings.WordWrap)
-        {
-            return;
-        }
-
         Settings.ShowStatusBar = !Settings.ShowStatusBar;
         OnPropertyChanged(nameof(Settings));
-        _settingsService.SaveEditorSettings(Settings);
-    }
-
-    /// <summary>
-    /// Maps to: Command IDs 34, 35, 36
-    /// </summary>
-    [RelayCommand]
-    private void ZoomIn()
-    {
-        Settings.ZoomLevel = Math.Min(500, Settings.ZoomLevel + 10);
-        OnPropertyChanged(nameof(Settings));
-        OnPropertyChanged(nameof(EditorFontSize));
-        OnPropertyChanged(nameof(EditorFontWeight));
-        OnPropertyChanged(nameof(EditorFontStyle));
-        _settingsService.SaveEditorSettings(Settings);
+        PersistSettings();
     }
 
     [RelayCommand]
-    private void ZoomOut()
+    private void ToggleLineNumbers()
     {
-        Settings.ZoomLevel = Math.Max(10, Settings.ZoomLevel - 10);
+        Settings.ShowLineNumbers = !Settings.ShowLineNumbers;
         OnPropertyChanged(nameof(Settings));
-        OnPropertyChanged(nameof(EditorFontSize));
-        OnPropertyChanged(nameof(EditorFontWeight));
-        OnPropertyChanged(nameof(EditorFontStyle));
-        _settingsService.SaveEditorSettings(Settings);
+        PersistSettings();
     }
 
     [RelayCommand]
-    private void RestoreZoom()
+    private void ToggleRightToLeft()
     {
-        Settings.ZoomLevel = 100;
+        Settings.RightToLeft = !Settings.RightToLeft;
+        OnPropertyChanged(nameof(Settings));
+        PersistSettings();
+    }
+
+    [RelayCommand]
+    private void TogglePreservePasteLineEndings()
+    {
+        Settings.PreservePastedLineEndings = !Settings.PreservePastedLineEndings;
+        if (EditorControl != null) EditorControl.PreservePastedLineEndings = Settings.PreservePastedLineEndings;
+        OnPropertyChanged(nameof(Settings));
+        PersistSettings();
+    }
+
+    [RelayCommand]
+    private void ToggleWindowsOnlyLineEndings()
+    {
+        Settings.WindowsOnlyLineEndings = !Settings.WindowsOnlyLineEndings;
+        if (EditorControl is { } editor)
+        {
+            editor.WindowsOnlyLineEndings = Settings.WindowsOnlyLineEndings;
+            editor.NewLine = Settings.WindowsOnlyLineEndings || Document.LineEnding == LineEndingStyle.CRLF
+                ? "\r\n" : Document.LineEnding == LineEndingStyle.LF ? "\n" : "\r";
+        }
+        OnPropertyChanged(nameof(Settings));
+        PersistSettings();
+    }
+
+    [RelayCommand]
+    private void ZoomIn() => SetZoom(Settings.ZoomLevel + 10);
+
+    [RelayCommand]
+    private void ZoomOut() => SetZoom(Settings.ZoomLevel - 10);
+
+    [RelayCommand]
+    private void RestoreZoom() => SetZoom(100);
+
+    private void SetZoom(int level)
+    {
+        level = Math.Clamp(level, 10, 500);
+        if (level == Settings.ZoomLevel) return;
+        Settings.ZoomLevel = level;
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(EditorFontSize));
-        OnPropertyChanged(nameof(EditorFontWeight));
-        OnPropertyChanged(nameof(EditorFontStyle));
-        _settingsService.SaveEditorSettings(Settings);
+        PersistSettings();
     }
 
     // ==================== Help Commands ====================
 
     [RelayCommand]
-    private void ViewHelp()
+    private Task ViewHelp() => LaunchAsync("https://go.microsoft.com/fwlink/?LinkId=834783");
+
+    public bool IsFeedbackAvailable => OperatingSystem.IsWindows();
+
+    [RelayCommand]
+    private Task SendFeedback() => LaunchAsync("feedback-hub://?tabid=2&contextid=1010");
+
+    [RelayCommand(CanExecute = nameof(HasSelection))]
+    private Task SearchWithBing()
     {
-        // Open help URL (like original Notepad)
-        Process.Start(new ProcessStartInfo
+        if (EditorControl is not { } editor || !HasSelection()) return Task.CompletedTask;
+        if (editor.SelectionLength > 2048) return ShowErrorAsync("Select up to 2,048 characters to search the web.");
+        return LaunchAsync("https://www.bing.com/search?q=" + Uri.EscapeDataString(editor.GetSelectedText()));
+    }
+
+    private async Task LaunchAsync(string address)
+    {
+        try { Process.Start(new ProcessStartInfo { FileName = address, UseShellExecute = true }); }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
-            FileName = "https://go.microsoft.com/fwlink/?LinkId=834783",
-            UseShellExecute = true
-        });
+            await ShowErrorAsync($"Cannot open the link. {ex.Message}");
+        }
     }
 
     [RelayCommand]
@@ -703,43 +584,6 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var dialog = new AboutDialog();
         dialog.ShowDialog(GetMainWindow());
-    }
-
-    // ==================== Helper Methods ====================
-
-    public async Task<bool> CheckSaveChangesAsync()
-    {
-        if (!Document.IsModified) return true;
-
-        var result = await MessageBoxManager.GetMessageBoxStandard("Notepad",
-            $"Do you want to save changes to {Document.FileName}?", ButtonEnum.YesNoCancel).ShowAsync();
-
-        if (result == ButtonResult.Yes)
-        {
-            await SaveFileAsync();
-            return !Document.IsModified;
-        }
-
-        return result == ButtonResult.No;
-    }
-
-    [RelayCommand]
-    public async Task OpenRecentFileAsync(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-
-        if (!File.Exists(path))
-        {
-            RecentFiles.Remove(path);
-            _settingsService.SaveRecentFiles(RecentFiles);
-            await ShowErrorAsync("File not found.");
-            return;
-        }
-
-        if (!await CheckSaveChangesAsync()) return;
-
-        await LoadFileAsync(path);
     }
 
     public void UpdateCaretPosition(int line, int column)
@@ -756,7 +600,7 @@ public partial class MainWindowViewModel : ObservableObject
             FileEncodingType.ANSI => "Windows (ANSI)",
             FileEncodingType.UTF16LE => "Unicode",
             FileEncodingType.UTF16BE => "Unicode big endian",
-            FileEncodingType.UTF8BOM => "UTF-8",
+            FileEncodingType.UTF8BOM => "UTF-8 with BOM",
             FileEncodingType.UTF8 => "UTF-8",
             _ => Document.Encoding.WebName.ToUpperInvariant()
         };
@@ -780,17 +624,25 @@ public partial class MainWindowViewModel : ObservableObject
         Settings.WindowY = position.Y;
         Settings.WindowWidth = (int)size.Width;
         Settings.WindowHeight = (int)size.Height;
-        OnPropertyChanged(nameof(Settings));
-        _settingsService.SaveEditorSettings(Settings);
     }
 
-    public void SaveSessionSettings()
+    public void SaveSessionSettings() => PersistSettings();
+
+    private void PersistSettings()
     {
-        Settings.LastEncoding = Document.SaveEncodingType;
-        _settingsService.SaveEditorSettings(Settings);
-        _settingsService.SaveSearchSettings(SearchSettings);
-        _settingsService.SavePageSetupSettings(PageSetupSettings);
-        _settingsService.SaveRecentFiles(RecentFiles);
+        try
+        {
+            _settingsService.Save(new AppSettings
+            {
+                Editor = Settings, Search = SearchSettings, PageSetup = PageSetupSettings, RecentFiles = [.. RecentFiles]
+            });
+            SettingsWarning = null;
+        }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            Trace.TraceWarning("Could not save the Notepad preferences: {0}", ex.GetType().Name);
+            SettingsWarning = "Preferences could not be saved.";
+        }
     }
 
     public bool CanUseGoToLine => !Settings.WordWrap;
@@ -799,27 +651,34 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(path)) return;
 
-        var existingIndex = RecentFiles.IndexOf(path);
-        if (existingIndex >= 0)
-        {
-            RecentFiles.RemoveAt(existingIndex);
-        }
+        var existing = RecentFiles.FirstOrDefault(item => SettingsService.PathComparer.Equals(item, path));
+        if (existing != null) RecentFiles.Remove(existing);
 
         RecentFiles.Insert(0, path);
         while (RecentFiles.Count > 10)
         {
             RecentFiles.RemoveAt(RecentFiles.Count - 1);
         }
-
-        _settingsService.SaveRecentFiles(RecentFiles);
+        if (OperatingSystem.IsWindows() && OwnerWindow?.TryGetPlatformHandle()?.HandleDescriptor == "HWND")
+            SHAddToRecentDocs(3, path); // SHARD_PATHW
     }
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern void SHAddToRecentDocs(uint kind, string path);
 
-    private Window GetMainWindow() =>
-        Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
-            ? desktop.MainWindow!
-            : throw new InvalidOperationException();
+    private Window GetMainWindow() => OwnerWindow ??
+        (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow ??
+        throw new InvalidOperationException("The command requires a window.");
 
-    private Task ShowErrorAsync(string message) =>
-        MessageBoxManager.GetMessageBoxStandard("Error", message, ButtonEnum.Ok).ShowAsync();
+    private Window? ActiveDialogOwner => _findReplaceDialog is { IsVisible: true, IsActive: true } ? _findReplaceDialog : OwnerWindow;
+
+    private async Task<ButtonResult> ShowMessageAsync(string title, string message, ButtonEnum buttons)
+    {
+        if (ActiveDialogOwner is { IsVisible: true } owner)
+            return await MessageBoxManager.GetMessageBoxStandard(title, message, buttons).ShowWindowDialogAsync(owner);
+
+        return ButtonResult.None;
+    }
+
+    private Task ShowErrorAsync(string message) => ShowMessageAsync("Notepad", message, ButtonEnum.Ok);
 }

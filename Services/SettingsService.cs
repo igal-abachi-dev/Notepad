@@ -1,92 +1,112 @@
-
-using NotepadAvalonia.Models;
+﻿using NotepadAvalonia.Models;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.Json.Serialization.Metadata;
 
-
+namespace NotepadAvalonia.Services;
 
 [JsonSerializable(typeof(AppSettings))]
-[JsonSourceGenerationOptions(WriteIndented = true)] // Optional: makes JSON readable
-internal partial class AppSettingsContext : JsonSerializerContext
-{
-}
+[JsonSourceGenerationOptions(WriteIndented = true)]
+internal partial class AppSettingsContext : JsonSerializerContext;
 
-/// <summary>
-/// Cross-platform settings storage
-/// Maps to: function_140010bd8 (load), function_1400107bc (save)
-/// Uses JSON instead of registry for portability
-/// </summary>
 public class SettingsService
 {
+    private static readonly object WriteLock = new();
     private readonly string _settingsPath;
+    private ObservableCollection<string>? _sharedRecents;
 
     public SettingsService(string? settingsPath = null)
     {
-        if (!string.IsNullOrWhiteSpace(settingsPath))
+        _settingsPath = Path.GetFullPath(string.IsNullOrWhiteSpace(settingsPath)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NotepadAvalonia", "settings.json")
+            : settingsPath);
+    }
+
+    public AppSettings Load()
+    {
+        try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
-            _settingsPath = settingsPath;
-            return;
+            using var stream = new FileStream(_settingsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var settings = JsonSerializer.Deserialize(stream, AppSettingsContext.Default.AppSettings) ?? new AppSettings();
+            settings.Editor ??= new();
+            settings.Search ??= new();
+            settings.PageSetup ??= new();
+            settings.RecentFiles ??= new();
+            settings.RecentFiles.RemoveAll(string.IsNullOrWhiteSpace);
+            settings.Search.SearchString ??= "";
+            settings.Search.ReplaceString ??= "";
+            if (string.IsNullOrWhiteSpace(settings.Editor.FontFamily)) settings.Editor.FontFamily = "Consolas";
+            settings.Editor.FontSize = double.IsFinite(settings.Editor.FontSize) ? Math.Clamp(settings.Editor.FontSize, 6, 144) : 11;
+            settings.Editor.ZoomLevel = Math.Clamp(settings.Editor.ZoomLevel, 10, 500);
+            if (!Enum.IsDefined(settings.Editor.DefaultEncoding)) settings.Editor.DefaultEncoding = FileEncodingType.UTF8;
+            settings.Editor.WindowWidth = Math.Clamp(settings.Editor.WindowWidth, 320, 16384);
+            settings.Editor.WindowHeight = Math.Clamp(settings.Editor.WindowHeight, 220, 16384);
+            return settings;
         }
-
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var settingsDir = Path.Combine(appData, "NotepadAvalonia");
-        Directory.CreateDirectory(settingsDir);
-        _settingsPath = Path.Combine(settingsDir, "settings.json");
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            Trace.TraceWarning("Could not load the Notepad preferences: {0}", ex.GetType().Name);
+            return new();
+        }
     }
 
-    private AppSettings LoadAll()
+    internal static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    internal ObservableCollection<string> GetSharedRecents(IEnumerable<string> initial) =>
+        _sharedRecents ??= new(initial.Distinct(PathComparer).Take(10));
+
+    public virtual void Save(AppSettings settings)
     {
-        if (!File.Exists(_settingsPath))
-            return new AppSettings();
-
-        var json = File.ReadAllText(_settingsPath);
-        return JsonSerializer.Deserialize<AppSettings>(json, AppSettingsContext.Default.AppSettings) ?? new AppSettings();
+        lock (WriteLock)
+            Write(settings);
     }
 
-    private void SaveAll(AppSettings settings)
+    private void Write(AppSettings settings)
     {
-        var json = JsonSerializer.Serialize(settings, AppSettingsContext.Default.AppSettings);
-        File.WriteAllText(_settingsPath, json);
+        string folder = Path.GetDirectoryName(_settingsPath)!;
+        Directory.CreateDirectory(folder);
+        string staging = Path.Combine(folder, $".settings-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(staging, FileMode.CreateNew))
+                JsonSerializer.Serialize(stream, settings, AppSettingsContext.Default.AppSettings);
+            File.Move(staging, _settingsPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(staging)) File.Delete(staging);
+        }
     }
 
-    public EditorSettings LoadEditorSettings() => LoadAll().Editor;
-    public void SaveEditorSettings(EditorSettings settings)
+    private void Update(Action<AppSettings> update)
     {
-        var all = LoadAll();
-        all.Editor = settings;
-        SaveAll(all);
+        lock (WriteLock)
+        {
+            var settings = Load();
+            update(settings);
+            Write(settings);
+        }
     }
 
-    public SearchSettings LoadSearchSettings() => LoadAll().Search;
-    public void SaveSearchSettings(SearchSettings settings)
-    {
-        var all = LoadAll();
-        all.Search = settings;
-        SaveAll(all);
-    }
-
-    public PageSetupSettings LoadPageSetupSettings() => LoadAll().PageSetup;
-    public void SavePageSetupSettings(PageSetupSettings settings)
-    {
-        var all = LoadAll();
-        all.PageSetup = settings;
-        SaveAll(all);
-    }
-
-    public List<string> LoadRecentFiles() => LoadAll().RecentFiles ?? new List<string>();
-    public void SaveRecentFiles(IEnumerable<string> files)
-    {
-        var all = LoadAll();
-        all.RecentFiles = new List<string>(files);
-        SaveAll(all);
-    }
-
+    public EditorSettings LoadEditorSettings() => Load().Editor;
+    public void SaveEditorSettings(EditorSettings settings) => Update(all => all.Editor = settings);
+    public SearchSettings LoadSearchSettings() => Load().Search;
+    public void SaveSearchSettings(SearchSettings settings) => Update(all => all.Search = settings);
+    public PageSetupSettings LoadPageSetupSettings() => Load().PageSetup;
+    public void SavePageSetupSettings(PageSetupSettings settings) => Update(all => all.PageSetup = settings);
+    public List<string> LoadRecentFiles() => Load().RecentFiles;
+    public void SaveRecentFiles(IEnumerable<string> files) => Update(all => all.RecentFiles = new(files));
 }
+
 public class AppSettings
 {
     public EditorSettings Editor { get; set; } = new();

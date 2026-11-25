@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Notepad.NeoEdit.Backend
 {
@@ -14,7 +12,7 @@ namespace Notepad.NeoEdit.Backend
 
         static PieceTreeEngine()
         {
-            Sentinel = new TreeNode(null, NodeColor.Black);
+            Sentinel = new TreeNode(null!, NodeColor.Black);
             Sentinel.Parent = Sentinel;
             Sentinel.Left = Sentinel;
             Sentinel.Right = Sentinel;
@@ -28,7 +26,7 @@ namespace Notepad.NeoEdit.Backend
         public PieceTreeEngine(string initialContent="")
         {
             Root = Sentinel;
-            _buffers = new List<StringBuffer> { new StringBuffer("") }; // Buffer 0: Add Buffer
+            _buffers = [new StringBuffer()];
 
             if (!string.IsNullOrEmpty(initialContent))
             {
@@ -69,14 +67,14 @@ namespace Notepad.NeoEdit.Backend
         private void InsertCore(int offset, string text)
         {
             var addBuffer = _buffers[0];
-            int startOffset = addBuffer.Content.Length;
+            int startOffset = addBuffer.Length;
             int startLine = addBuffer.LineStarts.Count - 1;
             var start = new BufferCursor(startLine, startOffset - addBuffer.LineStarts[startLine]);
-            bool splitCrLf = text[0] == '\n' && startOffset > 0 && addBuffer.Content[startOffset - 1] == '\r';
+            bool splitCrLf = text[0] == '\n' && startOffset > 0 && addBuffer[startOffset - 1] == '\r';
 
             addBuffer.Append(text);
             int endLine = addBuffer.LineStarts.Count - 1;
-            var end = new BufferCursor(endLine, addBuffer.Content.Length - addBuffer.LineStarts[endLine]);
+            var end = new BufferCursor(endLine, addBuffer.Length - addBuffer.LineStarts[endLine]);
             int lfCnt = endLine - startLine;
 
             if (offset == 0)
@@ -175,18 +173,20 @@ namespace Notepad.NeoEdit.Backend
 
         // --- Lookups ---
 
-        public string GetLineContent(int lineNumber)
+        public string? GetLineContent(int lineNumber)
         {
             if (lineNumber < 0 || lineNumber >= _cachedLineCount) return null;
             int offset = GetOffsetAtLine(lineNumber);
-            int nextLineOffset = (lineNumber == _cachedLineCount - 1) ? _cachedLength : GetOffsetAtLine(lineNumber + 1);
-            int len = nextLineOffset - offset;
-            string raw = GetTextInRange(offset, len);
+            return GetTextInRange(offset, GetLineContentLength(lineNumber));
+        }
 
-            // Trim EOL
-            if (raw.EndsWith("\r\n")) return raw.Substring(0, raw.Length - 2);
-            if (raw.EndsWith("\n") || raw.EndsWith("\r")) return raw.Substring(0, raw.Length - 1);
-            return raw;
+        internal int GetLineContentLength(int lineNumber)
+        {
+            int start = GetOffsetAtLine(lineNumber);
+            if (lineNumber == _cachedLineCount - 1) return _cachedLength - start;
+            int end = GetOffsetAtLine(lineNumber + 1);
+            int probe = Math.Max(start, end - 2);
+            return end - start - (GetTextInRange(probe, end - probe) == "\r\n" ? 2 : 1);
         }
 
         public (int line, int col) GetLineColumnFromOffset(int offset)
@@ -230,33 +230,27 @@ namespace Notepad.NeoEdit.Backend
 
         public string GetTextInRange(int offset, int length)
         {
-            if (length == 0) return "";
-            var sb = new StringBuilder(length);
-            var pos = NodeAt(offset);
-            TreeNode node = pos.Node;
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
+            int count = Math.Min(length, _cachedLength - offset);
+            if (count <= 0) return "";
 
-            // Edge case: if NodeAt returns Sentinel/EOF logic, we might need adjustments
-            if (node == Sentinel) return "";
-
-            int internalOffset = pos.Remainder;
-            int remaining = length;
-
-            while (remaining > 0 && node != Sentinel)
+            return string.Create(count, (Position: NodeAt(offset), Buffers: _buffers), static (remaining, state) =>
             {
-                var buf = _buffers[node.Piece.BufferIndex];
-                int pieceStartAbs = buf.LineStarts[node.Piece.Start.Line] + node.Piece.Start.Column;
-                int readStart = pieceStartAbs + internalOffset;
-
-                int charCountInPiece = node.Piece.Length - internalOffset;
-                int canRead = Math.Min(charCountInPiece, remaining);
-
-                sb.Append(buf.Content.ToString(readStart, canRead));
-
-                remaining -= canRead;
-                internalOffset = 0;
-                node = node.Next();
-            }
-            return sb.ToString();
+                var node = state.Position.Node;
+                int withinPiece = state.Position.Remainder;
+                while (!remaining.IsEmpty)
+                {
+                    var piece = node.Piece;
+                    var buffer = state.Buffers[piece.BufferIndex];
+                    int start = buffer.LineStarts[piece.Start.Line] + piece.Start.Column + withinPiece;
+                    int take = Math.Min(remaining.Length, piece.Length - withinPiece);
+                    buffer.CopyTo(start, remaining[..take]);
+                    remaining = remaining[take..];
+                    withinPiece = 0;
+                    node = node.Next();
+                }
+            });
         }
 
         // --- Internal Algorithms ---
@@ -615,8 +609,8 @@ namespace Notepad.NeoEdit.Backend
             var buffer = _buffers[bufferIndex];
             int endAbs = buffer.LineStarts[end.Line] + end.Column;
             // A piece ending between CR and LF contains a standalone CR.
-            if (endAbs < buffer.Content.Length &&
-                buffer.Content[endAbs - 1] == '\r' && buffer.Content[endAbs] == '\n')
+            if (endAbs < buffer.Length &&
+                buffer[endAbs - 1] == '\r' && buffer[endAbs] == '\n')
                 count++;
             return count;
         }

@@ -1,9 +1,11 @@
 using System.IO;
+using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using System.Text;
 using System.Threading.Tasks;
 using System;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Unicode;
 
 namespace NotepadAvalonia.Services;
@@ -14,36 +16,52 @@ namespace NotepadAvalonia.Services;
 /// </summary>
 public class FileService 
 {
+    private const int MaximumInputSize = 1024 * 1024 * 1024;
+
     static FileService()
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
-    public async Task<(string content, Encoding encoding, FileEncodingType encodingType, LineEndingStyle lineEnding)> LoadFileAsync(string path)
+    public async Task<(string content, Encoding encoding, FileEncodingType encodingType, LineEndingStyle lineEnding)> LoadFileAsync(
+        string path, FileEncodingType? requestedEncoding = null, bool windowsOnly = false)
     {
-        var bytes = await File.ReadAllBytesAsync(path);
-        var encodingType = DetectEncodingType(bytes);
-        var encoding = GetEncoding(encodingType);
-
-        // Skip BOM if present
-        int bomLength = GetBomLength(bytes);
-        var content = encoding.GetString(bytes, bomLength, bytes.Length - bomLength);
-
-        var lineEnding = DetectLineEndings(content);
-
-        return (content, encoding, encodingType, lineEnding);
+        var file = await ReadDocumentAsync(path, requestedEncoding, windowsOnly);
+        return (file.Content, file.Encoding, file.EncodingType, file.LineEnding);
     }
 
-    public async Task SaveFileAsync(string path, string content, FileEncodingType encodingType, LineEndingStyle lineEnding)
+    public virtual async Task<LoadedFile> ReadDocumentAsync(string path, FileEncodingType? requestedEncoding = null, bool windowsOnly = false)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        long length = stream.Length;
+        if (length >= MaximumInputSize)
+            throw new IOException("Notepad can open files smaller than 1 GiB.");
+
+        var bytes = new byte[(int)length];
+        await stream.ReadExactlyAsync(bytes);
+        var encodingType = requestedEncoding ?? DetectEncodingType(bytes);
+        var encoding = GetEncoding(encodingType);
+
+        int bomLength = GetBomLength(bytes, encodingType);
+        var content = encoding.GetString(bytes, bomLength, bytes.Length - bomLength);
+
+        if (windowsOnly) content = TextLineEndings.Normalize(content, "\r\n");
+        var lineEnding = DetectLineEndings(content);
+
+        return new(content, encoding, encodingType, lineEnding, new(bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes))));
+    }
+
+    public async Task SaveFileAsync(string path, string content, FileEncodingType encodingType, LineEndingStyle lineEnding) =>
+        await CommitFileAsync(path, content, encodingType, lineEnding);
+
+    public virtual async Task<FileVersion> CommitFileAsync(string path, string content, FileEncodingType encodingType,
+        LineEndingStyle lineEnding, FileVersion? expected = null)
     {
         // Preserve existing line endings (do not normalize) to mirror classic Notepad behavior.
         _ = lineEnding;
 
         var encoding = GetEncoding(encodingType);
-
-        // Encode before touching the destination so unrepresentable characters fail safely.
-        byte[] contentBytes = encoding.GetBytes(content);
-        byte[] bomBytes = encoding.GetPreamble();
 
         string destination = Path.GetFullPath(path);
         if (File.Exists(destination))
@@ -53,15 +71,24 @@ public class FileService
         bool created = false;
         try
         {
-            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+            FileVersion written;
+            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite,
                 FileShare.None, bufferSize: 4096, FileOptions.Asynchronous))
             {
                 created = true;
-                await stream.WriteAsync(bomBytes);
-                await stream.WriteAsync(contentBytes);
+                // Stream conversion into the staging file. Strict encoding failures leave the destination intact.
+                await using (var writer = new StreamWriter(stream, encoding, bufferSize: 8192, leaveOpen: true))
+                    await writer.WriteAsync(content.AsMemory());
+                await Task.Run(() => stream.Flush(flushToDisk: true));
+                stream.Position = 0;
+                written = await ReadVersionAsync(stream);
             }
 
-            if (File.Exists(destination))
+            await using var original = expected == null ? null : OpenForVersionCheck(destination);
+            if (original != null && (original.Length != expected!.Length || await ReadVersionAsync(original) != expected))
+                throw new FileChangedException();
+
+            if (original != null || File.Exists(destination))
             {
                 if (!OperatingSystem.IsWindows())
                     File.SetUnixFileMode(tempPath, File.GetUnixFileMode(destination));
@@ -72,10 +99,27 @@ public class FileService
                 File.Move(tempPath, destination);
             }
             created = false;
+            return written;
         }
         finally
         {
             if (created) File.Delete(tempPath);
+        }
+    }
+
+    private static async Task<FileVersion> ReadVersionAsync(FileStream stream) =>
+        new(stream.Length, Convert.ToHexString(await SHA256.HashDataAsync(stream)));
+
+    private static FileStream OpenForVersionCheck(string path)
+    {
+        try
+        {
+            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
+                bufferSize: 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new FileChangedException();
         }
     }
 
@@ -157,16 +201,15 @@ public class FileService
         };
     }
 
-    private int GetBomLength(byte[] bytes)
+    private static int GetBomLength(byte[] bytes, FileEncodingType kind)
     {
-        if (bytes.Length >= 3 &&
-            bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-            return 3;
-        if (bytes.Length >= 2 &&
-            ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
-             (bytes[0] == 0xFE && bytes[1] == 0xFF)))
-            return 2;
-        return 0;
+        return kind switch
+        {
+            FileEncodingType.UTF8 or FileEncodingType.UTF8BOM when bytes.AsSpan().StartsWith("\uFEFF"u8) => 3,
+            FileEncodingType.UTF16LE when bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE => 2,
+            FileEncodingType.UTF16BE when bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF => 2,
+            _ => 0
+        };
     }
 
     private FileEncodingType? LooksLikeUtf16(byte[] bytes)
@@ -204,3 +247,8 @@ public class FileService
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool IsTextUnicode(byte[] buf, int len, ref int lpi);
 }
+
+public sealed record LoadedFile(string Content, Encoding Encoding, FileEncodingType EncodingType,
+    LineEndingStyle LineEnding, FileVersion Version);
+
+public sealed class FileChangedException() : IOException("The file changed or was removed on disk. Use Save As to save your edits to another file.");

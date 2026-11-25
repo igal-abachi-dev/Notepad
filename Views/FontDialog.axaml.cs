@@ -1,56 +1,60 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Media;
+using NotepadAvalonia.Models;
+using System;
+using System.Linq;
 
 namespace NotepadAvalonia.Views;
 
 public partial class FontDialog : Window
 {
-    public FontDialog()
+    public FontDialog() : this(new EditorSettings()) { }
+
+    public FontDialog(EditorSettings settings)
     {
         InitializeComponent();
-        FontFamilies = new List<string>
-        {
-            "Consolas",
-            "Cascadia Code",
-            "Segoe UI",
-            "Courier New",
-            "Arial",
-            "Calibri",
-            "Times New Roman"
-        };
-        if (!FontFamilies.Contains(FontFamily) && FontFamilies.Count > 0)
-        {
-            FontFamily = FontFamilies[0];
-        }
-        DataContext = this;
+        var families = FontManager.Current.SystemFonts.Select(font => font.Name)
+            .Distinct(StringComparer.CurrentCultureIgnoreCase).OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (families.Count == 0) families.Add(FontManager.Current.DefaultFontFamily.Name);
+        FontComboBox.ItemsSource = families;
+        FontComboBox.SelectedItem = families.FirstOrDefault(name => StringComparer.CurrentCultureIgnoreCase.Equals(name, settings.FontFamily))
+            ?? families[0];
+        SizeBox.Value = (decimal)settings.FontSize;
+        BoldBox.IsChecked = settings.IsBold;
+        ItalicBox.IsChecked = settings.IsItalic;
+        UpdatePreview();
+
+        FontComboBox.SelectionChanged += (_, _) => UpdatePreview();
+        SizeBox.ValueChanged += (_, _) => UpdatePreview();
+        BoldBox.IsCheckedChanged += (_, _) => UpdatePreview();
+        ItalicBox.IsCheckedChanged += (_, _) => UpdatePreview();
     }
 
-    public List<string> FontFamilies { get; }
+    public string SelectedFamily => FontComboBox.SelectedItem as string ?? FontManager.Current.DefaultFontFamily.Name;
+    public double SelectedSize => (double)(SizeBox.Value ?? 11);
+    public bool IsBold => BoldBox.IsChecked == true;
+    public bool IsItalic => ItalicBox.IsChecked == true;
 
-    public new string FontFamily { get; set; } = "Consolas";
-
-    public new double FontSize { get; set; } = 11;
-
-    public bool IsBold { get; set; }
-
-    public bool IsItalic { get; set; }
-
-    private void OnOk(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void UpdatePreview()
     {
-        Close(true);
+        PreviewText.FontFamily = new FontFamily(SelectedFamily);
+        PreviewText.FontSize = SelectedSize * 96 / 72;
+        PreviewText.FontWeight = IsBold ? FontWeight.Bold : FontWeight.Normal;
+        PreviewText.FontStyle = IsItalic ? FontStyle.Italic : FontStyle.Normal;
     }
 
-    private void OnCancel(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnOk(object? sender, RoutedEventArgs e)
     {
-        Close(false);
+        if (SizeBox.Value.HasValue) Close(true);
+        else SizeBox.Focus();
     }
+
+    private void OnCancel(object? sender, RoutedEventArgs e) => Close(false);
 
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
-        this.FindControl<ComboBox>("FontComboBox")?.Focus();
+        FontComboBox.Focus();
     }
 }

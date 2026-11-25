@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using NotepadAvalonia.Services;
 using System.IO;
 using System.Text;
 
@@ -7,15 +9,27 @@ namespace NotepadAvalonia.Models;
 /// Represents a document's state and metadata
 /// Maps to: g380 (filename), g148 (untitled), g311 (encoding)
 /// </summary>
-public class DocumentModel
+public partial class DocumentModel : ObservableObject
 {
-    public string FilePath { get; set; } = string.Empty;
-    public bool IsUntitled { get; set; } = true;
-    public bool IsModified { get; set; } = false;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FileName), nameof(WindowTitle))]
+    private string _filePath = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FileName), nameof(WindowTitle))]
+    private bool _isUntitled = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(WindowTitle))]
+    private bool _isModified;
     public Encoding Encoding { get; set; } = Encoding.Default;
     public FileEncodingType EncodingType { get; set; } = FileEncodingType.UTF8;
     public FileEncodingType SaveEncodingType { get; set; } = FileEncodingType.UTF8;
     public LineEndingStyle LineEnding { get; set; } = LineEndingStyle.CRLF;
+    internal FileVersion? SavedFileVersion { get; set; }
+    internal DraftLease? Draft { get; set; }
+    internal long DraftVersion { get; set; } = -1;
+    internal long DraftSequence { get; set; }
 
     public string FileName => IsUntitled
         ? "Untitled"
@@ -23,6 +37,8 @@ public class DocumentModel
 
     public string WindowTitle => $"{(IsModified ? "*" : "")}{FileName} - Notepad";
 }
+
+public sealed record FileVersion(long Length, string Sha256);
 
 public enum LineEndingStyle
 {

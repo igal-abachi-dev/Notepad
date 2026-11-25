@@ -1,867 +1,508 @@
 ﻿using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
-using Avalonia.Media;
-using Avalonia.Media.TextFormatting;
+using Avalonia.Input.TextInput;
 using Avalonia.Threading;
-using HarfBuzzSharp;
-using Notepad.NeoEdit.Backend; // Ensure this matches your backend namespace
+using Notepad.NeoEdit.Backend;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Threading.Tasks;
 
-namespace Notepad.NeoEdit
+namespace Notepad.NeoEdit;
+
+public sealed partial class NeoEditor : Control
 {
-    /*
-       Performance: You are using a Piece Table. You can open a 50MB log file in that window, and it will scroll just as smoothly as that small C# file.
-       Independence: You have zero dependencies on AvaloniaEdit. You own every pixel, every line of logic, and every keystroke.
-     */
-    public sealed class NeoEditor : Control , ILogicalScrollable
+    private enum EditKind { Independent, Typing, Backspace, Delete }
+    private const int MaxUndoEntries = 512;
+    private const long MaxUndoCharacters = 4L * 1024 * 1024;
+
+    private readonly record struct Selection(int Anchor, int Caret);
+    private sealed record EditOp(int Offset, string Removed, string Inserted,
+        Selection Before, Selection After, long BeforeRevision, long AfterRevision, EditKind Kind)
     {
-        // 1. Define Styled Properties (This allows XAML binding)
-        public static readonly StyledProperty<string> TextProperty =
-            AvaloniaProperty.Register<NeoEditor, string>(nameof(Text), "");
+        public long StoredCharacters => (long)Removed.Length + Inserted.Length;
+    }
 
-        public static readonly StyledProperty<FontFamily> FontFamilyProperty =
-            AvaloniaProperty.Register<NeoEditor, FontFamily>(nameof(FontFamily), new FontFamily("Consolas"));
+    private PieceTreeEngine _doc = new("");
+    private string? _snapshot = "";
+    private int _caretOffset;
+    private int _anchorOffset;
+    private long _nextRevision;
+    private long _savedRevision;
+    private long _lastGroupEdit;
+    private bool _continueGroup;
+    private double? _preferredCaretX;
+    private bool _caretVisible = true;
+    private readonly DispatcherTimer _caretTimer;
+    private readonly LinkedList<EditOp> _undo = new();
+    private readonly Stack<EditOp> _redo = new();
+    private long _undoCharacters;
+    private (long Version, int Line, int[] Starts) _textElements = (-1, -1, []);
 
-        public static readonly StyledProperty<double> FontSizeProperty =
-            AvaloniaProperty.Register<NeoEditor, double>(nameof(FontSize), 14.0);
+    public string Text { get => GetText(); set => LoadDocument(value); }
+    public string NewLine { get; set; } = "\r\n";
+    public bool PreservePastedLineEndings { get; set; }
+    public bool WindowsOnlyLineEndings { get; set; }
+    public int LineCount => _doc.LineCount;
+    public int TextLength => _doc.Length;
+    public long DocumentVersion { get; private set; }
+    internal long SelectionVersion { get; private set; }
+    public long Revision { get; private set; }
+    public bool IsModified => Revision != _savedRevision;
+    public bool CanUndo => _undo.Count > 0;
+    public bool CanRedo => _redo.Count > 0;
 
-        public static readonly StyledProperty<IBrush> ForegroundProperty =
-            AvaloniaProperty.Register<NeoEditor, IBrush>(nameof(Foreground), Brushes.Black);
+    public int CaretOffset { get => _caretOffset; set => SetSelection(value, 0); }
+    public int SelectionAnchor => _anchorOffset;
 
-        public static readonly StyledProperty<SyntaxLanguage> LanguageProperty =
-            AvaloniaProperty.Register<NeoEditor, SyntaxLanguage>(nameof(Language), SyntaxLanguage.Plain);
-
-        // 2. Public Properties wrappers
-        public string Text
+    public int SelectionStart
+    {
+        get => Math.Min(_caretOffset, _anchorOffset);
+        set
         {
-            get => GetValue(TextProperty);
-            set => LoadDocument(value);
+            int start = Math.Clamp(value, 0, _doc.Length);
+            SetSelection(start, Math.Max(0, SelectionStart + SelectionLength - start));
         }
+    }
 
-        public SyntaxLanguage Language
+    public int SelectionLength
+    {
+        get => Math.Abs(_caretOffset - _anchorOffset);
+        set => SetSelection(SelectionStart, Math.Max(0, value));
+    }
+
+    public event EventHandler? TextChanged;
+    public event EventHandler<(int Line, int Column)>? CaretMoved;
+    public event EventHandler<int>? ZoomRequested;
+
+    public NeoEditor()
+    {
+        Focusable = true;
+        ClipToBounds = true;
+        Cursor = new Cursor(StandardCursorType.Ibeam);
+        _inputMethod = new EditorInputMethod(this);
+        TextInputOptions.SetMultiline(this, true);
+        TextInputMethodClientRequested += (_, e) => e.Client = _inputMethod;
+        ScrollInvalidated += (_, _) => _inputMethod.NotifyGeometry();
+        _caretTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) =>
         {
-            get => GetValue(LanguageProperty);
-            set { SetValue(LanguageProperty, value); _layoutCache.Clear(); InvalidateVisual(); }
-        }
-
-        public FontFamily FontFamily
-        {
-            get => GetValue(FontFamilyProperty);
-            set => SetValue(FontFamilyProperty, value);
-        }
-
-        public double FontSize
-        {
-            get => GetValue(FontSizeProperty);
-            set => SetValue(FontSizeProperty, value);
-        }
-
-        public IBrush Foreground
-        {
-            get => GetValue(ForegroundProperty);
-            set => SetValue(ForegroundProperty, value);
-        }
-
-        private PieceTreeEngine _doc;
-        private readonly Typeface _typeface = new("Consolas");
-        private readonly double _fontSize = 14;
-        private readonly double _lineHeight = 22;
-        private const int TabSize = 4;
-        private const double GutterWidth = 25;
-
-        // Visual Cache
-        private readonly Dictionary<int, TextLayout> _layoutCache = new();
-
-        // State
-        private int _caretOffset = 0;
-        private int _anchorOffset = 0; // For selection
-        private long _documentVersion;
-        private double _scrollOffsetY = 0;
-        private double? _preferredCaretX = null;
-        private bool _isDragging = false;
-
-        // Blink
-        private bool _caretVisible = true;
-        private readonly DispatcherTimer _caretTimer;
-
-        // Undo Stack
-        private readonly Stack<EditOp> _undoStack = new();
-        private readonly Stack<EditOp> _redoStack = new();
-
-        private record EditOp(int Offset, string RemovedText, string InsertedText);
-
-        public string NewLine { get; set; } = "\r\n";
-        
-        public int SelectionStart
-        {
-            get => Math.Min(_caretOffset, _anchorOffset);
-            set
-            {
-                int end = SelectionStart + SelectionLength; // Preserve end position
-                SetSelection(value, end - value);
-            }
-        }
-
-        public int SelectionLength
-        {
-            get => Math.Abs(_caretOffset - _anchorOffset);
-            set
-            {
-                SetSelection(_anchorOffset, value);
-            }
-        }
-        public void SetSelection(int start, int length)
-        {
-            _anchorOffset = start;
-            _caretOffset = start + length;
-            _preferredCaretX = null;
-            EnsureCaretVisible();
+            _caretVisible = !_caretVisible;
             InvalidateVisual();
-            NotifyCaretMoved();
-        }
-
-        public event EventHandler? TextChanged;
-        public event EventHandler<(int Line, int Column)>? CaretMoved;
-        public NeoEditor()
+        });
+        GotFocus += (_, _) =>
         {
-            _doc = new PieceTreeEngine("");
-            Focusable = true;
-            Cursor = new Cursor(StandardCursorType.Ibeam);
-
-            PointerPressed += OnPointerPressed;
-            PointerMoved += OnPointerMoved;
-            PointerReleased += (s, e) => _isDragging = false;
-            PointerWheelChanged += OnScroll;
-
-            _caretTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (s, e) =>
-            {
-                if (IsFocused)
-                {
-                    _caretVisible = !_caretVisible;
-                    InvalidateVisual();
-                }
-            });
-
-            GotFocus += (s, e) =>
-            {
-                _caretVisible = true;
-                _caretTimer.Start();
-                InvalidateVisual();
-            };
-            LostFocus += (s, e) =>
-            {
-                _caretVisible = false;
-                _caretTimer.Stop();
-                InvalidateVisual();
-            };
-        }
-        private Typeface GetTypeface()
-        {
-            return new Typeface(FontFamily, FontStyle.Normal, FontWeight.Normal);
-        }
-        protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
-        {
-            base.OnPropertyChanged(change);
-
-            if (change.Property == TextProperty)
-            {
-                ResetDocument(change.GetNewValue<string>() ?? "");
-            }
-            else if (change.Property == FontFamilyProperty ||
-                     change.Property == LanguageProperty ||
-                     change.Property == FontSizeProperty ||
-                     change.Property == ForegroundProperty)
-            {
-                _layoutCache.Clear(); // Font changed, invalid layout
-                InvalidateVisual();
-            }
-        }
-        public void LoadDocument(string? text)
-        {
-            text ??= "";
-            if (text == GetValue(TextProperty))
-                ResetDocument(text);
-            else
-                SetCurrentValue(TextProperty, text);
-        }
-
-        private void ResetDocument(string text)
-        {
-            _doc = new PieceTreeEngine(text);
-            _documentVersion++;
-            _undoStack.Clear();
-            _redoStack.Clear();
-            _caretOffset = 0;
-            _anchorOffset = 0;
-            _preferredCaretX = null;
-            _layoutCache.Clear();
-            Offset = default;
-            UpdateScrollInfo();
-            CaretMoved?.Invoke(this, (1, 1));
-        }
-
-        // --- Input ---
-
-        protected override void OnTextInput(TextInputEventArgs e)
-        {
-            if (string.IsNullOrEmpty(e.Text)) return;
-            string text = e.Text.Replace("\r\n", "\n").Replace('\r', '\n');
-            InsertAtCaret(text.Replace("\n", NewLine));
-        }
-
-        // 2. HELPER: Auto-Detect Line Direction
-        private FlowDirection GetLineDirection(string text)
-        {
-            // If Global is RTL, we might want to force everything RTL, 
-            // but usually "Notepad" style is Auto-Detect per line.
-
-            // Simple Heuristic: Check for first Strong LTR or RTL char
-            foreach (char c in text)
-            {
-                // Hebrew (0590-08FF) or Arabic (0600-06FF)
-                if (c >= 0x0590 && c <= 0x08FF) return FlowDirection.RightToLeft;
-                if (char.IsLetter(c)) return FlowDirection.LeftToRight; // English/Latin
-            }
-            // Default to Global setting if neutral (numbers/punctuation only)
-            return FlowDirection;
-        }
-        protected override void OnKeyDown(KeyEventArgs e)
-        {
-            bool handled = true;
-
-            bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
-            bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
-
-            // Navigation
-            if (e.Key == Key.Left) MoveCaretHorizontal(-1, shift);
-            else if (e.Key == Key.Right) MoveCaretHorizontal(1, shift);
-            else if (e.Key == Key.Up) MoveCaretVertical(-1, shift);
-            else if (e.Key == Key.Down) MoveCaretVertical(1, shift);
-            else if (e.Key == Key.Home) MoveCaretToLineEdge(true, shift);
-            else if (e.Key == Key.End) MoveCaretToLineEdge(false, shift);
-
-            // Scroll Pages
-            else if (e.Key == Key.PageUp) ScrollPage(-1, shift);
-            else if (e.Key == Key.PageDown) ScrollPage(1, shift);
-
-            // Editing
-            else if (e.Key == Key.Enter)
-            {
-                InsertAtCaret(NewLine);
-            }
-            else if (e.Key == Key.Back)
-            {
-                if (_caretOffset != _anchorOffset) DeleteSelection();
-                else if (_caretOffset > 0)
-                {
-                    int previous = GetAdjacentOffset(-1);
-                    ReplaceRange(previous, _caretOffset - previous, "");
-                }
-            }
-            else if (e.Key == Key.Delete)
-            {
-                if (_caretOffset != _anchorOffset) DeleteSelection();
-                else if (_caretOffset < _doc.Length)
-                    ReplaceRange(_caretOffset, GetAdjacentOffset(1) - _caretOffset, "");
-            }
-
-            // Commands
-            else if (ctrl && e.Key == Key.Z) Undo();
-            else if (ctrl && e.Key == Key.Y) Redo();
-            else if (ctrl && e.Key == Key.A)
-            {
-                SelectAll();
-            }
-            else
-            {
-                // IMPORTANT: If we didn't match a special key, let it bubble up.
-                // This allows 'A', 'B', '!', etc. to generate OnTextInput.
-                handled = false;
-            }
-            if (handled)
-            {
-                e.Handled = true;
-            }
-        }
-
-        public int CaretOffset
-        {
-            get => _caretOffset;
-            set => SetSelection(Math.Clamp(value, 0, _doc.Length), 0);
-        }
-        public int LineCount => _doc.LineCount;
-
-        // Helper for SearchService
-        public void ReplaceRange(int start, int length, string newText)
-        {
-            if (start < 0 || start > _doc.Length) throw new ArgumentOutOfRangeException(nameof(start));
-            if (length < 0 || length > _doc.Length - start) throw new ArgumentOutOfRangeException(nameof(length));
-            string removedText = _doc.GetTextInRange(start, length);
-            if (removedText == newText) return;
-
-            _undoStack.Push(new EditOp(start, removedText, newText));
-            _redoStack.Clear();
-            ApplyEdit(start, length, newText);
-        }
-        // Helper for GoToLine
-        public void MoveCaretToLine(int lineIndex)
-        {
-            lineIndex = Math.Clamp(lineIndex, 0, LineCount - 1);
-            _caretOffset = _doc.GetOffsetFromLineColumn(lineIndex, 0);
-            _anchorOffset = _caretOffset;
-            EnsureCaretVisible();
+            _caretVisible = true;
+            _caretTimer.Start();
             InvalidateVisual();
-        }
-        // --- Logic ---
-
-        private void ApplyEdit(int offset, int length, string text)
+        };
+        LostFocus += (_, _) =>
         {
-            _doc.Delete(offset, length);
-            _doc.Insert(offset, text);
-            _documentVersion++;
-            _caretOffset = offset + text.Length;
-            _anchorOffset = _caretOffset;
-            _preferredCaretX = null;
-            _layoutCache.Clear();
-            UpdateScrollInfo();
-            EnsureCaretVisible();
+            _continueGroup = false;
+            SetComposition(null);
+            _caretTimer.Stop();
             InvalidateVisual();
-            NotifyCaretMoved();
-            TextChanged?.Invoke(this, EventArgs.Empty);
+        };
+    }
+
+    public string GetText() => _snapshot ??= _doc.GetTextInRange(0, _doc.Length);
+    public string GetSelectedText() => _doc.GetTextInRange(SelectionStart, SelectionLength);
+
+    public void LoadDocument(string? text, bool restoredDraft = false)
+    {
+        text ??= "";
+        _inputMethod.Reset();
+        _doc = new PieceTreeEngine(text);
+        _snapshot = text;
+        Revision = ++_nextRevision;
+        _savedRevision = restoredDraft ? -1 : Revision;
+        DocumentVersion++;
+        _undo.Clear();
+        _undoCharacters = 0;
+        _redo.Clear();
+        _continueGroup = false;
+        _caretOffset = _anchorOffset = 0;
+        _preferredCaretX = null;
+        _wrappedRowEnd = false;
+        InvalidateDocumentLayout();
+        Offset = default;
+        NotifyCaretMoved();
+    }
+
+    public long CaptureSaveRevision()
+    {
+        _continueGroup = false;
+        return Revision;
+    }
+
+    public void MarkSaved(long revision)
+    {
+        _savedRevision = revision;
+        _continueGroup = false;
+    }
+
+    public void SetSelection(int start, int length)
+    {
+        int anchor = Math.Clamp(start, 0, _doc.Length);
+        int caret = (int)Math.Clamp((long)start + length, 0, _doc.Length);
+        if (anchor == caret)
+            anchor = caret = SnapOffset(caret, 1);
+        else
+        {
+            int direction = Math.Sign(caret - anchor);
+            anchor = SnapOffset(anchor, -direction);
+            caret = SnapOffset(caret, direction);
+        }
+        MoveSelection(anchor, caret);
+    }
+
+    public void Select(int start, int length) => SetSelection(start, length);
+    public void SelectAll() => SetSelection(0, _doc.Length);
+
+    private int SnapOffset(int offset, int direction)
+    {
+        if (offset > 0 && offset < _doc.Length)
+        {
+            string pair = _doc.GetTextInRange(offset - 1, 2);
+            if (pair == "\r\n" || char.IsSurrogatePair(pair, 0))
+                return offset + direction;
+        }
+        return offset;
+    }
+
+    private int AdjacentOffset(int offset, int direction) =>
+        SnapOffset(Math.Clamp(offset + direction, 0, _doc.Length), direction);
+
+    private int TextElementEdge(int offset, int direction, bool advance)
+    {
+        int first = Math.Max(0, offset - 2);
+        var neighborhood = _doc.GetTextInRange(first, Math.Min(_doc.Length - first, offset - first + 2));
+        bool ascii = true;
+        foreach (char c in neighborhood)
+            ascii &= c < 128;
+        if (ascii) return advance ? AdjacentOffset(offset, direction) : offset;
+
+        var (line, column) = _doc.GetLineColumnFromOffset(offset);
+        int start = offset - column;
+        int lineLength = _doc.GetLineContentLength(line);
+        if (_textElements.Version != DocumentVersion || _textElements.Line != line)
+            _textElements = (DocumentVersion, line, StringInfo.ParseCombiningCharacters(_doc.GetTextInRange(start, lineLength)));
+        var starts = _textElements.Starts;
+        int index = Array.BinarySearch(starts, column);
+        bool boundary = index >= 0 || column == lineLength;
+        if (boundary && !advance) return offset;
+        if (index < 0)
+            index = ~index - (direction < 0 ? 1 : 0);
+        else
+            index += direction;
+        if (index >= 0 && index < starts.Length) return start + starts[index];
+        if (direction > 0 && column < lineLength) return start + lineLength;
+        return advance ? AdjacentOffset(offset, direction) : offset;
+    }
+
+    private void MoveSelection(int anchor, int caret, bool keepPreferredX = false, bool wrappedRowEnd = false)
+    {
+        _continueGroup = false;
+        if (_anchorOffset != anchor || _caretOffset != caret) SelectionVersion++;
+        _anchorOffset = anchor;
+        _caretOffset = caret;
+        _wrappedRowEnd = wrappedRowEnd;
+        if (!keepPreferredX) _preferredCaretX = null;
+        UpdateCaret();
+    }
+
+    public void MoveCaretToLine(int lineIndex) =>
+        SetSelection(_doc.GetOffsetFromLineColumn(Math.Clamp(lineIndex, 0, LineCount - 1), 0), 0);
+
+    public void ReplaceRange(int start, int length, string newText, int? endCaret = null) =>
+        ReplaceRange(start, length, newText, EditKind.Independent, endCaret);
+
+    private void ReplaceRange(int start, int length, string text, EditKind kind, int? endCaret = null)
+    {
+        if (start < 0 || start > _doc.Length) throw new ArgumentOutOfRangeException(nameof(start));
+        if (length < 0 || length > _doc.Length - start) throw new ArgumentOutOfRangeException(nameof(length));
+        // Explicit range edits may change individual line delimiters, but they may not split a Unicode scalar.
+        if (SplitsSurrogate(start) || SplitsSurrogate(start + length) || !IsValidUtf16(text))
+            throw new ArgumentException("The replacement would produce invalid Unicode.", nameof(text));
+
+        string removed = _doc.GetTextInRange(start, length);
+        if (removed == text)
+        {
+            _continueGroup = false;
+            if (endCaret.HasValue) SetSelection(endCaret.Value, 0);
+            return;
         }
 
-        private void NotifyCaretMoved()
+        var before = new Selection(_anchorOffset, _caretOffset);
+        long beforeRevision = Revision;
+        ApplyChange(start, length, text);
+        _caretOffset = _anchorOffset = SnapOffset(Math.Clamp(endCaret ?? (start + text.Length), 0, _doc.Length), 1);
+        Revision = ++_nextRevision;
+        var edit = new EditOp(start, removed, text, before, new(_anchorOffset, _caretOffset),
+            beforeRevision, Revision, kind);
+        var now = Environment.TickCount64;
+        if (_continueGroup && now - _lastGroupEdit <= 1000 && _undo.Last?.Value is { } previous &&
+            MergeEdits(previous, edit) is { } merged)
         {
-            var (line, column) = _doc.GetLineColumnFromOffset(_caretOffset);
-            CaretMoved?.Invoke(this, (line + 1, column + 1));
+            _undo.RemoveLast();
+            _undoCharacters -= previous.StoredCharacters;
+            edit = merged;
+        }
+        RememberUndo(edit);
+        _redo.Clear();
+        _continueGroup = kind != EditKind.Independent;
+        _lastGroupEdit = now;
+        PublishChange();
+    }
+
+    private void RememberUndo(EditOp edit)
+    {
+        _undo.AddLast(edit);
+        _undoCharacters += edit.StoredCharacters;
+        // Keep the most recent edit undoable even if a single large paste exceeds the usual budget.
+        while (_undo.First != _undo.Last && (_undo.Count > MaxUndoEntries || _undoCharacters > MaxUndoCharacters))
+        {
+            _undoCharacters -= _undo.First!.Value.StoredCharacters;
+            _undo.RemoveFirst();
+        }
+    }
+
+    private bool SplitsSurrogate(int offset) =>
+        offset > 0 && offset < _doc.Length && char.IsSurrogatePair(_doc.GetTextInRange(offset - 1, 2), 0);
+
+    private static bool IsValidUtf16(string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (!char.IsSurrogate(text[i])) continue;
+            if (i + 1 >= text.Length || !char.IsSurrogatePair(text[i], text[i + 1])) return false;
+            i++;
+        }
+        return true;
+    }
+
+    private static EditOp? MergeEdits(EditOp previous, EditOp next)
+    {
+        if (previous.Kind != next.Kind || previous.After != next.Before) return null;
+        // Bound concatenation work for sustained typing and held keys.
+        if ((long)previous.Inserted.Length + previous.Removed.Length + next.Inserted.Length + next.Removed.Length > 1024)
+            return null;
+
+        var merged = previous with { After = next.After, AfterRevision = next.AfterRevision };
+        return next.Kind switch
+        {
+            EditKind.Typing when previous.Offset + previous.Inserted.Length == next.Offset =>
+                merged with { Inserted = previous.Inserted + next.Inserted },
+            EditKind.Backspace when next.Offset + next.Removed.Length == previous.Offset =>
+                merged with { Offset = next.Offset, Removed = next.Removed + previous.Removed },
+            EditKind.Delete when previous.Offset == next.Offset =>
+                merged with { Removed = previous.Removed + next.Removed },
+            _ => null
+        };
+    }
+
+    private void ApplyChange(int offset, int length, string text)
+    {
+        int startLine = _doc.GetLineColumnFromOffset(Math.Max(0, offset - 1)).Item1;
+        int oldLastLine = _doc.GetLineColumnFromOffset(Math.Min(_doc.Length, offset + length + (offset + length < _doc.Length ? 1 : 0))).Item1;
+        int oldLineCount = _doc.LineCount;
+        _doc.Delete(offset, length);
+        _doc.Insert(offset, text);
+        _snapshot = null;
+        DocumentVersion++;
+        InvalidateDocumentLayout(startLine, oldLastLine, oldLineCount);
+    }
+
+    private void PublishChange()
+    {
+        SetComposition(null);
+        _preferredCaretX = null;
+        _wrappedRowEnd = false;
+        UpdateCaret();
+        TextChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void UpdateCaret()
+    {
+        _caretVisible = true;
+        EnsureCaretVisible();
+        InvalidateVisual();
+        NotifyCaretMoved();
+    }
+
+    private void NotifyCaretMoved()
+    {
+        var (line, column) = _doc.GetLineColumnFromOffset(_caretOffset);
+        _inputMethod.NotifySelectionAndText();
+        CaretMoved?.Invoke(this, (line + 1, column + 1));
+    }
+
+    public void InsertAtCaret(string text) => ReplaceRange(SelectionStart, SelectionLength, text);
+
+    public void DeleteSelection()
+    {
+        if (SelectionLength != 0) InsertAtCaret("");
+    }
+
+    public void Undo()
+    {
+        if (_undo.Last?.Value is not { } edit) return;
+        _undo.RemoveLast();
+        _undoCharacters -= edit.StoredCharacters;
+        _redo.Push(edit);
+        Replay(edit.Offset, edit.Inserted.Length, edit.Removed, edit.Before, edit.BeforeRevision);
+    }
+
+    public void Redo()
+    {
+        if (!_redo.TryPop(out var edit)) return;
+        RememberUndo(edit);
+        Replay(edit.Offset, edit.Removed.Length, edit.Inserted, edit.After, edit.AfterRevision);
+    }
+
+    private void Replay(int offset, int length, string text, Selection selection, long revision)
+    {
+        _continueGroup = false;
+        ApplyChange(offset, length, text);
+        _anchorOffset = selection.Anchor;
+        _caretOffset = selection.Caret;
+        Revision = revision;
+        PublishChange();
+    }
+
+    protected override void OnTextInput(TextInputEventArgs e)
+    {
+        base.OnTextInput(e);
+        if (e.Handled || string.IsNullOrEmpty(e.Text) || !IsValidUtf16(e.Text)) return;
+        SetComposition(null);
+        string text = TextLineEndings.Normalize(e.Text, NewLine);
+        ReplaceRange(SelectionStart, SelectionLength, text,
+            SelectionLength == 0 && !text.Contains('\r') && !text.Contains('\n')
+                ? EditKind.Typing : EditKind.Independent);
+        e.Handled = true;
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.Handled) return;
+        if (_preeditText.Length > 0) return;
+
+        bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+        if (ctrl && alt) return; // AltGr combinations reach the platform text-input path.
+        switch (e.Key)
+        {
+            case Key.Left when !alt: MoveHorizontal(-1, shift, ctrl); break;
+            case Key.Right when !alt: MoveHorizontal(1, shift, ctrl); break;
+            case Key.Up when !alt: MoveVertical(-1, shift); break;
+            case Key.Down when !alt: MoveVertical(1, shift); break;
+            case Key.Home when !alt: MoveToEdge(true, shift, ctrl); break;
+            case Key.End when !alt: MoveToEdge(false, shift, ctrl); break;
+            case Key.PageUp when !alt: MoveVertical(-PageRows, shift); break;
+            case Key.PageDown when !alt: MoveVertical(PageRows, shift); break;
+            case Key.Enter when !ctrl && !alt: InsertAtCaret(NewLine); break;
+            case Key.Tab when !ctrl && !alt && !shift: InsertAtCaret("\t"); break;
+            case Key.Back when alt: Undo(); break;
+            case Key.Back: DeleteAdjacent(-1, ctrl); break;
+            case Key.Delete when !shift && !alt: DeleteAdjacent(1, ctrl); break;
+            case Key.Z when ctrl && shift: Redo(); break;
+            case Key.Z when ctrl: Undo(); break;
+            case Key.Y when ctrl: Redo(); break;
+            case Key.A when ctrl: SelectAll(); break;
+            default: return;
+        }
+        e.Handled = true;
+    }
+
+    private void DeleteAdjacent(int direction, bool word)
+    {
+        if (SelectionLength != 0)
+        {
+            DeleteSelection();
+            return;
+        }
+        int start = word ? _caretOffset : TextElementEdge(_caretOffset, -direction, advance: false);
+        int end = word ? WordOffset(start, direction) : TextElementEdge(start, direction, advance: true);
+        ReplaceRange(Math.Min(start, end), Math.Abs(end - start), "",
+            word ? EditKind.Independent : direction < 0 ? EditKind.Backspace : EditKind.Delete);
+    }
+
+    private void MoveHorizontal(int direction, bool select, bool word)
+    {
+        int target;
+        if ((!select && SelectionLength > 0) || word)
+            direction *= HorizontalReadingDirection();
+        if (!select && !word && SelectionLength > 0)
+            target = direction < 0 ? SelectionStart : SelectionStart + SelectionLength;
+        else
+            target = word ? WordOffset(_caretOffset, direction) : FindHorizontalTarget(direction);
+        MoveSelection(select ? _anchorOffset : target, target);
+    }
+
+    private int WordOffset(int offset, int direction)
+    {
+        int CategoryAt(int boundary)
+        {
+            int index = direction < 0 ? AdjacentOffset(boundary, -1) : boundary;
+            return WordCategory(index);
         }
 
-        public void InsertAtCaret(string text)
+        int edge = direction < 0 ? 0 : _doc.Length;
+        if (offset == edge) return offset;
+        if (direction < 0)
+            while (offset != edge && CategoryAt(offset) == 0)
+                offset = AdjacentOffset(offset, direction);
+        if (offset == edge) return offset;
+        int category = CategoryAt(offset);
+        do { offset = AdjacentOffset(offset, direction); }
+        while (offset != edge && CategoryAt(offset) == category);
+        if (direction > 0 && category != 0)
+            while (offset != edge && CategoryAt(offset) == 0)
+                offset = AdjacentOffset(offset, direction);
+        return offset;
+    }
+
+    private int WordCategory(int offset)
+    {
+        string value = _doc.GetTextInRange(offset, AdjacentOffset(offset, 1) - offset);
+        if (value.Length == 0 || char.IsWhiteSpace(value, 0)) return 0;
+        return char.GetUnicodeCategory(value, 0) is
+            UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or
+            UnicodeCategory.TitlecaseLetter or UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter or
+            UnicodeCategory.DecimalDigitNumber or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber or
+            UnicodeCategory.ConnectorPunctuation or UnicodeCategory.NonSpacingMark or
+            UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark ? 1 : 2;
+    }
+
+    public Task CutAsync() => CopySelectionAsync(removeSelection: true);
+    public Task CopyAsync() => CopySelectionAsync(removeSelection: false);
+
+    private (long Document, long Selection) CurrentSelection => (DocumentVersion, SelectionVersion);
+
+    private async Task CopySelectionAsync(bool removeSelection)
+    {
+        var selection = CurrentSelection;
+        var top = TopLevel.GetTopLevel(this);
+        if (SelectionLength == 0 || top?.Clipboard is not { } clipboard) return;
+        await clipboard.SetTextAsync(GetSelectedText());
+        if (removeSelection && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
+            DeleteSelection();
+    }
+
+    public async Task PasteAsync()
+    {
+        var selection = CurrentSelection;
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.Clipboard is not { } clipboard) return;
+        string? text = await clipboard.TryGetTextAsync();
+        if (!string.IsNullOrEmpty(text) && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
         {
-            ReplaceRange(SelectionStart, SelectionLength, text);
-        }
-        public void DeleteSelection()
-        {
-            ReplaceRange(SelectionStart, SelectionLength, "");
-        }
-
-        public void Undo()
-        {
-            if (_undoStack.Count == 0) return;
-            var op = _undoStack.Pop();
-            _redoStack.Push(op);
-            ApplyEdit(op.Offset, op.InsertedText.Length, op.RemovedText);
-        }
-
-        public void Redo()
-        {
-            if (_redoStack.Count == 0) return;
-            var op = _redoStack.Pop();
-            _undoStack.Push(op);
-            ApplyEdit(op.Offset, op.RemovedText.Length, op.InsertedText);
-        }
-
-        // --- Rendering ---
-
-        public override void Render(DrawingContext context)
-        {
-            context.FillRectangle(Brushes.White, new Rect(Bounds.Size));
-            context.FillRectangle(Brushes.WhiteSmoke, new Rect(0, 0, GutterWidth, Bounds.Height));
-
-            int firstLine = (int)(_scrollOffsetY / _lineHeight);
-            int visibleLines = (int)(Bounds.Height / _lineHeight) + 2;
-            int lastLine = Math.Min(_doc.LineCount, firstLine + visibleLines);
-
-            double y = (firstLine * _lineHeight) - _scrollOffsetY;
-
-            // Selection geometry
-            int selStart = Math.Min(_caretOffset, _anchorOffset);
-            int selEnd = Math.Max(_caretOffset, _anchorOffset);
-
-            // Available width for text (Window width - gutter)
-            double textWidth = Math.Max(0, Bounds.Width - GutterWidth - 10);
-            for (int i = firstLine; i < lastLine; i++)
-            {
-                // 1. Line Number
-                var lineNum = new FormattedText((i + 1).ToString(), System.Globalization.CultureInfo.CurrentCulture,
-                    FlowDirection.LeftToRight, GetTypeface(), _fontSize * 0.8, Brushes.Gray);
-                context.DrawText(lineNum, new Point(GutterWidth - lineNum.Width - 5, y + 2));
-
-                // 2. Text Layout - Get Content & Expand Tabs
-                string raw = _doc.GetLineContent(i) ?? "";
-                string expanded = ExpandTabs(raw);
-
-                // Detect Direction for this specific line
-                var lineDir = GetLineDirection(expanded);
-
-                // Create Layout
-                // Important: Set TextAlignment based on direction so it visually aligns R or L
-                var alignment = (lineDir == FlowDirection.RightToLeft) ? TextAlignment.Right : TextAlignment.Left;
-
-                // 3. Text Layout (Create or Retrieve from Cache)
-                if (!_layoutCache.TryGetValue(i, out var layout))
-                {
-                    //Generate Syntax Highlights 
-                    var overrides = SyntaxMatcher.GetOverrides(expanded, Language, GetTypeface(), FontSize, Foreground);
-
-                    layout = new TextLayout(expanded,GetTypeface(), _fontSize, Foreground, textAlignment: alignment,
-                        maxWidth: textWidth, maxHeight: _lineHeight,
-                        flowDirection: lineDir,
-                        textStyleOverrides: overrides);
-
-                    _layoutCache[i] = layout;
-                }
-
-                // 4. Selection Rendering
-                int lineStartOffset = _doc.GetOffsetFromLineColumn(i, 0);
-                int lineLen = raw.Length;
-                int lineEndOffset = lineStartOffset + lineLen;
-
-                if (selStart != selEnd)
-                {
-                    int s = Math.Max(selStart, lineStartOffset);
-                    int e = Math.Min(selEnd, lineEndOffset);
-                    if (s < e)
-                    {
-                        int vStart = DocToVisualIndex(raw, s - lineStartOffset);
-                        int vEnd = DocToVisualIndex(raw, e - lineStartOffset);
-
-                        foreach (var rect in layout.HitTestTextRange(vStart, vEnd - vStart))
-                        {
-                            context.FillRectangle(Brushes.LightBlue,
-                                new Rect(rect.X + GutterWidth + 5, y, rect.Width, _lineHeight));
-                        }
-                    }
-                }
-
-                // 5. Syntax Highlighting Overlay (Regex) (Pass 'expanded' string explicitly)
-                //DrawSyntaxOverlay(context, layout, expanded, y);
-
-                // 6. Draw Text
-                using (context.PushTransform(Matrix.CreateTranslation(GutterWidth + 5, y)))
-                {
-                    layout.Draw(context, new Point(0, 0));
-                }
-
-                // 7. Caret Rendering
-                if (_caretVisible && _caretOffset >= lineStartOffset && _caretOffset <= lineEndOffset)
-                {
-                    int localCaret = _caretOffset - lineStartOffset;
-                    // Handle caret at end of line (valid position)
-                    if (localCaret >= 0 && localCaret <= raw.Length)
-                    {
-                        int vCaret = DocToVisualIndex(raw, localCaret);
-                        var hit = layout.HitTestTextPosition(vCaret);
-                        context.DrawLine(new Pen(Brushes.Black, 1.5),
-                            new Point(hit.X + GutterWidth + 5, y),
-                            new Point(hit.X + GutterWidth + 5, y + _lineHeight));
-                    }
-                }
-
-                y += _lineHeight;
-            }
-        }
-
-        // --- Visual Helpers ---
-
-        private static string ExpandTabs(string s)
-        {
-            if (s.IndexOf('\t') < 0) return s;
-            var sb = new StringBuilder();
-            int col = 0;
-            foreach (char c in s)
-            {
-                if (c == '\t')
-                {
-                    int add = TabSize - (col % TabSize);
-                    sb.Append(' ', add);
-                    col += add;
-                }
-                else
-                {
-                    sb.Append(c);
-                    col++;
-                }
-            }
-            return sb.ToString();
-        }
-
-        private static int DocToVisualIndex(string s, int docIndex)
-        {
-            int v = 0;
-            for (int i = 0; i < docIndex && i < s.Length; i++)
-            {
-                if (s[i] == '\t') v += TabSize - (v % TabSize);
-                else v++;
-            }
-            return v;
-        }
-
-        private static int VisualToDocIndex(string s, int visualIndex)
-        {
-            int v = 0;
-            for (int i = 0; i < s.Length; i++)
-            {
-                int w = (s[i] == '\t') ? TabSize - (v % TabSize) : 1;
-                if (v + w > visualIndex) return i;
-                v += w;
-            }
-            return s.Length;
-        }
-
-        private static readonly Regex RxKw =
-            new(@"\b(using|namespace|public|private|class|void|int|string|return|new|var|if|else)\b",
-                RegexOptions.Compiled);
-
-        private static readonly Regex RxStr = new(@""".*?""", RegexOptions.Compiled);
-        private static readonly Regex RxCom = new(@"//.*", RegexOptions.Compiled);
-
-        // FIX: Added 'string text' argument because TextLayout doesn't expose it safely
-        private void DrawSyntaxOverlay(DrawingContext ctx, TextLayout layout, string text, double y)
-        {
-            void Highlight(Regex rx, Color color)
-            {
-                foreach (Match m in rx.Matches(text))
-                {
-                    foreach (var rect in layout.HitTestTextRange(m.Index, m.Length))
-                    {
-                        ctx.FillRectangle(new SolidColorBrush(color, 0.25),
-                            new Rect(rect.X + GutterWidth + 5, y, rect.Width, _lineHeight));
-                    }
-                }
-            }
-
-            Highlight(RxKw, Colors.Blue);
-            Highlight(RxStr, Colors.Brown);
-            Highlight(RxCom, Colors.Green);
-        }
-
-        // --- Navigation ---
-
-        private void MoveCaretHorizontal(int delta, bool sel)
-        {
-            _caretOffset = GetAdjacentOffset(delta);
-            if (!sel) _anchorOffset = _caretOffset;
-            _preferredCaretX = null;
-            EnsureCaretVisible();
-            InvalidateVisual();
-
-            var (line, col) = _doc.GetLineColumnFromOffset(_caretOffset);
-            CaretMoved?.Invoke(this, (line + 1, col + 1));
-        }
-
-        private int GetAdjacentOffset(int direction)
-        {
-            int offset = Math.Clamp(_caretOffset + direction, 0, _doc.Length);
-            if (offset > 0 && offset < _doc.Length)
-            {
-                string pair = _doc.GetTextInRange(offset - 1, 2);
-                if (pair == "\r\n" || char.IsSurrogatePair(pair, 0))
-                    offset += direction;
-            }
-            return offset;
-        }
-
-        private void MoveCaretVertical(int delta, bool sel)
-        {
-            var (line, _) = _doc.GetLineColumnFromOffset(_caretOffset);
-            int nextLine = Math.Clamp(line + delta, 0, _doc.LineCount - 1);
-
-            if (_preferredCaretX == null)
-            {
-                if (_layoutCache.TryGetValue(line, out var layout))
-                {
-                    int start = _doc.GetOffsetFromLineColumn(line, 0);
-                    int local = _caretOffset - start;
-                    string txt = _doc.GetLineContent(line) ?? "";
-                    int vIndex = DocToVisualIndex(txt, local);
-
-                    // FIX: Get X from the layout geometry directly
-                    _preferredCaretX = layout.HitTestTextPosition(vIndex).X;
-                }
-            }
-
-            string nextTxt = _doc.GetLineContent(nextLine) ?? "";
-            string nextExp = ExpandTabs(nextTxt);
-            var nextLayout = new TextLayout(nextExp, _typeface, _fontSize, Brushes.Black);
-
-            // FIX: HitTestPoint now returns result, we use HitTestTextPosition to get X/Rect if needed, 
-            // but here we just need the text index from the pixel X.
-            var hit = nextLayout.HitTestPoint(new Point(_preferredCaretX ?? 0, 0));
-            int vCol = hit.TextPosition;
-
-            int docCol = VisualToDocIndex(nextTxt, vCol);
-
-            _caretOffset = _doc.GetOffsetFromLineColumn(nextLine, docCol);
-            if (!sel) _anchorOffset = _caretOffset;
-            EnsureCaretVisible();
-            InvalidateVisual();
-            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
-            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
-        }
-
-        private void MoveCaretToLineEdge(bool start, bool sel)
-        {
-            var (line, _) = _doc.GetLineColumnFromOffset(_caretOffset);
-            if (start) _caretOffset = _doc.GetOffsetFromLineColumn(line, 0);
-            else
-            {
-                string txt = _doc.GetLineContent(line) ?? "";
-                _caretOffset = _doc.GetOffsetFromLineColumn(line, txt.Length);
-            }
-
-            if (!sel) _anchorOffset = _caretOffset;
-            _preferredCaretX = null;
-            EnsureCaretVisible();
-            InvalidateVisual();
-            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
-            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
-        }
-
-        private void ScrollPage(int dir, bool sel)
-        {
-            int lines = (int)(Bounds.Height / _lineHeight);
-            MoveCaretVertical(lines * dir, sel);
-        }
-
-        private void EnsureCaretVisible()
-        {
-            var (line, _) = _doc.GetLineColumnFromOffset(_caretOffset);
-            double caretY = line * _lineHeight;
-
-            if (caretY < _scrollOffsetY)
-                _scrollOffsetY = caretY;
-            else if (caretY + _lineHeight > _scrollOffsetY + Bounds.Height)
-                _scrollOffsetY = caretY + _lineHeight - Bounds.Height;
-        }
-
-        private void OnPointerPressed(object sender, PointerPressedEventArgs e)
-        {
-            _isDragging = true;
-            var p = e.GetPosition(this);
-            p = p.WithX(p.X - GutterWidth - 5);
-
-            double y = p.Y + _scrollOffsetY;
-            int line = (int)(y / _lineHeight);
-            line = Math.Clamp(line, 0, _doc.LineCount - 1);
-
-            string txt = _doc.GetLineContent(line) ?? "";
-            string exp = ExpandTabs(txt);
-            var layout = new TextLayout(exp, _typeface, _fontSize, Brushes.Black);
-
-            // FIX: Get TextPosition from HitTestResult
-            var hit = layout.HitTestPoint(new Point(p.X, 0));
-            int docCol = VisualToDocIndex(txt, hit.TextPosition);
-
-            _caretOffset = _doc.GetOffsetFromLineColumn(line, docCol);
-
-            if (!e.KeyModifiers.HasFlag(KeyModifiers.Shift)) _anchorOffset = _caretOffset;
-
-            // FIX: Get correct X for preferred position
-            _preferredCaretX = layout.HitTestTextPosition(hit.TextPosition).X;
-
-            InvalidateVisual();
-            Focus();
-
-            var (line2, col2) = _doc.GetLineColumnFromOffset(_caretOffset);
-            CaretMoved?.Invoke(this, (line2 + 1, col2 + 1));
-        }
-
-        private void OnPointerMoved(object sender, PointerEventArgs e)
-        {
-            if (_isDragging)
-            {
-                var p = e.GetPosition(this);
-                p = p.WithX(p.X - GutterWidth - 5);
-
-                double y = p.Y + _scrollOffsetY;
-                int line = (int)(y / _lineHeight);
-                line = Math.Clamp(line, 0, _doc.LineCount - 1);
-
-                string txt = _doc.GetLineContent(line) ?? "";
-                string exp = ExpandTabs(txt);
-                var layout = new TextLayout(exp, _typeface, _fontSize, Brushes.Black);
-                var hit = layout.HitTestPoint(new Point(p.X, 0));
-
-                int docCol = VisualToDocIndex(txt, hit.TextPosition);
-                _caretOffset = _doc.GetOffsetFromLineColumn(line, docCol);
-                InvalidateVisual();
-            }
-        }
-
-        private void OnScroll(object sender, PointerWheelEventArgs e)
-        {
-            _scrollOffsetY -= e.Delta.Y * _lineHeight * 3;
-            _scrollOffsetY = Math.Max(0, _scrollOffsetY);
-            double maxScroll = Math.Max(0, (_doc.LineCount * _lineHeight) - Bounds.Height);
-            _scrollOffsetY = Math.Min(_scrollOffsetY, maxScroll);
-            InvalidateVisual();
-        }
-
-        public void SelectAll()
-        {
-            _anchorOffset = 0;
-            _caretOffset = _doc.Length;
-            InvalidateVisual();
-        }
-        public string GetText() => _doc.GetTextInRange(0, _doc.Length);
-
-        public void ScrollToLine(int line)
-        {
-            double y = line * _lineHeight;
-            double targetY = Math.Max(0, y - (Bounds.Height / 2)); // Center it roughly
-
-            // Use the Interface Property to update ScrollViewer
-            this.Offset = new Vector(Offset.X, targetY);
-        }
-        public void Select(int start, int length) => SetSelection(start, length);
-
-        public Task CutAsync() => CopySelectionAsync(removeSelection: true);
-        public Task CopyAsync() => CopySelectionAsync(removeSelection: false);
-
-        private (long Version, int Start, int Length) CurrentSelection =>
-            (_documentVersion, SelectionStart, SelectionLength);
-
-        private async Task CopySelectionAsync(bool removeSelection)
-        {
-            var selection = CurrentSelection;
-            var top = TopLevel.GetTopLevel(this);
-            if (selection.Length == 0 || top?.Clipboard is not { } clipboard) return;
-
-            await clipboard.SetTextAsync(_doc.GetTextInRange(selection.Start, selection.Length));
-            if (removeSelection && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
-                ReplaceRange(selection.Start, selection.Length, "");
-        }
-
-        public async Task PasteAsync()
-        {
-            var selection = CurrentSelection;
-            var top = TopLevel.GetTopLevel(this);
-            if (top?.Clipboard is not { } clipboard) return;
-
-            string? text = await clipboard.TryGetTextAsync();
-            if (!string.IsNullOrEmpty(text) && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
-                ReplaceRange(selection.Start, selection.Length, text);
-        }
-
-        public bool CanHorizontallyScroll { get; set; } = true;
-        public bool CanVerticallyScroll { get; set; } = true;
-
-        // This is the "State" the ScrollViewer reads
-        public bool IsLogicalScrollEnabled => true;
-
-        public Size ScrollSize => new Size(50, _lineHeight); // Step size for arrow keys
-        public Size PageScrollSize => new Size(Bounds.Width, Bounds.Height);
-
-        private Size _extent;
-        public Size Extent
-        {
-            get => _extent;
-            private set
-            {
-                if (_extent != value)
-                {
-                    _extent = value;
-                    ScrollInvalidated?.Invoke(this, EventArgs.Empty);
-                }
-            }
-        }
-
-        private Size _viewport;
-        public Size Viewport
-        {
-            get => _viewport;
-            private set
-            {
-                if (_viewport != value)
-                {
-                    _viewport = value;
-                    ScrollInvalidated?.Invoke(this, EventArgs.Empty);
-                }
-            }
-        }
-
-        private Vector _offset;
-        public Vector Offset
-        {
-            get => _offset;
-            set
-            {
-                // This setter is called by the ScrollViewer
-                _offset = value;
-                _scrollOffsetY = value.Y; // Sync our internal render offset
-                                          // _scrollOffsetX = value.X; // (Future horizontal support)
-                InvalidateVisual();
-                ScrollInvalidated?.Invoke(this, EventArgs.Empty);
-            }
-        }
-
-        public event EventHandler? ScrollInvalidated;
-
-        public bool BringIntoView(Control target, Rect targetRect) { return false; }
-        public Control? GetControlInDirection(NavigationDirection direction, Control? from) { return null; }
-        public void RaiseScrollInvalidated(EventArgs e) => ScrollInvalidated?.Invoke(this, e);
-
-        // --- Helper to Update ScrollBars ---
-
-        // Call this whenever Text changes or Control Resizes
-        private void UpdateScrollInfo()
-        {
-            // 1. Calculate Content Height (Extent)
-            double totalHeight = Math.Max(Bounds.Height, _doc.LineCount * _lineHeight);
-
-            // 2. Calculate Viewport
-            Size newViewport = Bounds.Size;
-            Size newExtent = new Size(Bounds.Width, totalHeight); // Horizontal TODO later
-
-            // 3. Update if changed
-            bool changed = false;
-            if (newViewport != Viewport) { _viewport = newViewport; changed = true; }
-            if (newExtent != Extent) { _extent = newExtent; changed = true; }
-
-            if (changed) ScrollInvalidated?.Invoke(this, EventArgs.Empty);
-        }
-
-        // --- Hook into Layout Pass ---
-        protected override Size MeasureOverride(Size availableSize)
-        {
-            // 1. Calculate Width
-            // If parent gives specific width (e.g. Window), use it.
-            // If parent gives Infinity (e.g. StackPanel), fall back to MinWidth or 100.
-            double width = double.IsInfinity(availableSize.Width)
-                ? (MinWidth > 0 ? MinWidth : 300)
-                : availableSize.Width;
-
-            // 2. Calculate Height
-            // If parent gives specific height, use it.
-            // If parent gives Infinity, fall back to MinHeight or 100.
-            double height = double.IsInfinity(availableSize.Height)
-                ? (MinHeight > 0 ? MinHeight : 300)
-                : availableSize.Height;
-
-            return new Size(width, height);
-        }
-
-        protected override void OnSizeChanged(SizeChangedEventArgs e)
-        {
-            base.OnSizeChanged(e);
-
-            // CRITICAL: Window size changed, so the "MaxWidth" for text changed.
-            // We must clear the cache so lines are re-measured with the new width.
-            _layoutCache.Clear();
-
-            // Update scrollbars (if view size changed, scroll thumb might need resizing)
-            UpdateScrollInfo();
-
-            InvalidateVisual();
+            if (WindowsOnlyLineEndings || !PreservePastedLineEndings)
+                text = TextLineEndings.Normalize(text, WindowsOnlyLineEndings ? "\r\n" : NewLine);
+            InsertAtCaret(text);
         }
     }
 }

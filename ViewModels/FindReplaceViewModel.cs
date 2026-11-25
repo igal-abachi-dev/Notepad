@@ -29,6 +29,9 @@ public partial class FindReplaceViewModel : ObservableObject
             {
                 _owner.SearchSettings.SearchString = value ?? string.Empty;
                 OnPropertyChanged();
+                FindNextCommand.NotifyCanExecuteChanged();
+                ReplaceCommand.NotifyCanExecuteChanged();
+                ReplaceAllCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -111,16 +114,20 @@ public partial class FindReplaceViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
-    private Task FindNextAsync() => _owner.FindNextCommand.ExecuteAsync(null);
+    private bool HasQuery() => !string.IsNullOrEmpty(FindText);
+    private bool CanReplace() => IsReplaceMode && HasQuery();
 
-    [RelayCommand]
-    private Task ReplaceAsync() =>
-        IsFindMode ? Task.CompletedTask : _owner.ReplaceNextCommand.ExecuteAsync(null);
+    [RelayCommand(CanExecute = nameof(HasQuery))]
+    private Task FindNextAsync() => _owner.FindFromDialogAsync(IsFindMode);
 
-    [RelayCommand]
-    private Task ReplaceAllAsync() =>
-        IsFindMode ? Task.CompletedTask : _owner.ReplaceAllCommand.ExecuteAsync(null);
+    [RelayCommand(CanExecute = nameof(CanReplace))]
+    private Task ReplaceAsync() => _owner.ReplaceNextCommand.ExecuteAsync(null);
+
+    [RelayCommand(CanExecute = nameof(CanReplace))]
+    private Task ReplaceAllAsync() => _owner.ReplaceAllCommand.ExecuteAsync(null);
+
+    public IAsyncRelayCommand RepeatDownCommand => _owner.FindNextCommand;
+    public IAsyncRelayCommand RepeatUpCommand => _owner.FindPreviousCommand;
 
     [RelayCommand]
     private void Close(Window? window)

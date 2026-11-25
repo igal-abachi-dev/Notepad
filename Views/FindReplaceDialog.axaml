@@ -3,25 +3,30 @@
         xmlns:vm="using:NotepadAvalonia.ViewModels"
         x:Class="NotepadAvalonia.Views.FindReplaceDialog"
         x:DataType="vm:FindReplaceViewModel"
-        Width="420"
-        Height="260"
+        Width="445"
+        SizeToContent="Height"
+        ShowInTaskbar="False"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         Title="{Binding Title}">
+  <Window.KeyBindings>
+    <KeyBinding Gesture="F3" Command="{Binding RepeatDownCommand}" />
+    <KeyBinding Gesture="Shift+F3" Command="{Binding RepeatUpCommand}" />
+  </Window.KeyBindings>
   <StackPanel Margin="12" Spacing="10">
     <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" Margin="0,0,0,6">
-      <TextBlock Text="_Find what:" Margin="0,0,10,6" VerticalAlignment="Center" />
+      <Label Content="_Find what:" Target="{Binding #FindTextBox}" Margin="0,0,10,6" VerticalAlignment="Center" />
       <TextBox x:Name="FindTextBox"
                Grid.Column="1"
                Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"
-               MinWidth="220" />
+               MinWidth="220" AutomationProperties.Name="Find what" />
 
-      <TextBlock Grid.Row="1" Text="Replace _with:" Margin="0,0,10,0" VerticalAlignment="Center"
+      <Label Grid.Row="1" Content="Replace _with:" Target="{Binding #ReplaceTextBox}" Margin="0,0,10,0" VerticalAlignment="Center"
                  IsVisible="{Binding IsReplaceMode}" />
-      <TextBox Grid.Row="1"
+      <TextBox x:Name="ReplaceTextBox" Grid.Row="1"
                Grid.Column="1"
                Text="{Binding ReplaceText, UpdateSourceTrigger=PropertyChanged}"
-               IsVisible="{Binding IsReplaceMode}" />
+               IsVisible="{Binding IsReplaceMode}" AutomationProperties.Name="Replace with" />
     </Grid>
 
     <StackPanel Orientation="Horizontal" Spacing="16">
@@ -31,16 +36,16 @@
         <CheckBox Content="Use rege_x" IsChecked="{Binding UseRegex}" />
       </StackPanel>
       <StackPanel>
-        <CheckBox Content="Direction: _Up" IsChecked="{Binding SearchUp}" />
+        <CheckBox Content="Search _up" IsChecked="{Binding SearchUp}" IsVisible="{Binding IsFindMode}" />
         <CheckBox Content="_Whole word" IsChecked="{Binding WholeWord}" />
       </StackPanel>
     </StackPanel>
 
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Content="_Find Next" Command="{Binding FindNextCommand}" MinWidth="90" />
+      <Button Content="_Find Next" Command="{Binding FindNextCommand}" MinWidth="90" IsDefault="True" />
       <Button Content="_Replace" Command="{Binding ReplaceCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
       <Button Content="Replace _All" Command="{Binding ReplaceAllCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
-      <Button Content="Cancel"
+      <Button Content="Cancel" IsCancel="True"
               Command="{Binding CloseCommand}"
               CommandParameter="{Binding $parent[Window]}"
               MinWidth="90" />

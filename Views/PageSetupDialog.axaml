@@ -1,47 +1,70 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:NotepadAvalonia.Views"
         x:Class="NotepadAvalonia.Views.PageSetupDialog"
-        Width="360"
-        Height="300"
-        CanResize="False"
-        WindowStartupLocation="CenterOwner"
         Title="Page Setup"
-        x:CompileBindings="False">
-  <StackPanel Margin="12" Spacing="10">
-    <StackPanel>
-      <TextBlock Text="_Header" />
-      <TextBox Text="{Binding Header}" />
-    </StackPanel>
-    <StackPanel>
-      <TextBlock Text="_Footer" />
-      <TextBox Text="{Binding Footer}" />
-    </StackPanel>
-
-    <StackPanel>
-      <TextBlock Text="Margins (mm)" FontWeight="Bold" Margin="0,4,0,4" />
-      <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="6">
+        Width="640"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="16" Spacing="12">
+    <Grid ColumnDefinitions="*,235" ColumnSpacing="20">
+      <StackPanel Spacing="7">
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+          <StackPanel>
+            <Label Content="_Paper" Target="{Binding #PaperBox}" />
+            <ComboBox x:Name="PaperBox" HorizontalAlignment="Stretch" AutomationProperties.Name="Paper size" />
+          </StackPanel>
+          <StackPanel Grid.Column="1">
+            <Label Content="_Orientation" Target="{Binding #OrientationBox}" />
+            <ComboBox x:Name="OrientationBox" HorizontalAlignment="Stretch" AutomationProperties.Name="Orientation">
+              <ComboBoxItem Content="Portrait" />
+              <ComboBoxItem Content="Landscape" />
+            </ComboBox>
+          </StackPanel>
+        </Grid>
+        <TextBlock Text="Margins (mm)" FontWeight="SemiBold" />
+        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+          <StackPanel>
+            <Label Content="_Left" Target="{Binding #LeftBox}" />
+            <NumericUpDown x:Name="LeftBox" Minimum="0" Maximum="500" AutomationProperties.Name="Left margin" />
+          </StackPanel>
+          <StackPanel Grid.Column="1">
+            <Label Content="_Right" Target="{Binding #RightBox}" />
+            <NumericUpDown x:Name="RightBox" Minimum="0" Maximum="500" AutomationProperties.Name="Right margin" />
+          </StackPanel>
+          <StackPanel Grid.Row="1">
+            <Label Content="_Top" Target="{Binding #TopBox}" />
+            <NumericUpDown x:Name="TopBox" Minimum="0" Maximum="500" AutomationProperties.Name="Top margin" />
+          </StackPanel>
+          <StackPanel Grid.Row="1" Grid.Column="1">
+            <Label Content="_Bottom" Target="{Binding #BottomBox}" />
+            <NumericUpDown x:Name="BottomBox" Minimum="0" Maximum="500" AutomationProperties.Name="Bottom margin" />
+          </StackPanel>
+        </Grid>
         <StackPanel>
-          <TextBlock Text="_Left" />
-          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginLeft}" />
+          <Label Content="_Header" Target="{Binding #HeaderBox}" />
+          <TextBox x:Name="HeaderBox" AutomationProperties.Name="Header" />
         </StackPanel>
-        <StackPanel Grid.Column="1">
-          <TextBlock Text="_Right" />
-          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginRight}" />
+        <StackPanel>
+          <Label Content="_Footer" Target="{Binding #FooterBox}" />
+          <TextBox x:Name="FooterBox" AutomationProperties.Name="Footer" />
         </StackPanel>
-        <StackPanel Grid.Row="1">
-          <TextBlock Text="_Top" />
-          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginTop}" />
-        </StackPanel>
-        <StackPanel Grid.Row="1" Grid.Column="1">
-          <TextBlock Text="_Bottom" />
-          <NumericUpDown Minimum="0" Maximum="100" Value="{Binding MarginBottom}" />
-        </StackPanel>
-      </Grid>
-    </StackPanel>
-
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Content="OK" MinWidth="80" Click="OnOk" />
-      <Button Content="Cancel" MinWidth="80" Click="OnCancel" />
-    </StackPanel>
+      </StackPanel>
+      <StackPanel Grid.Column="1" Spacing="8">
+        <TextBlock Text="Layout Preview" FontWeight="SemiBold" />
+        <local:PrintPagePreview x:Name="SheetPreview" Height="262" AutomationProperties.Name="Page preview" />
+        <TextBlock Text="&amp;f file, &amp;p page, &amp;d date, &amp;t time&#10;&amp;l left, &amp;c center, &amp;r right, &amp;&amp; ampersand"
+                   Opacity="0.75" TextWrapping="Wrap" />
+      </StackPanel>
+    </Grid>
+    <TextBlock x:Name="Problem" IsVisible="False" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+    <DockPanel LastChildFill="False">
+      <Button x:Name="PrinterButton" DockPanel.Dock="Left" Content="_Printer..." Click="OnPrinter" />
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+        <Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" />
+        <Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />
+      </StackPanel>
+    </DockPanel>
   </StackPanel>
 </Window>

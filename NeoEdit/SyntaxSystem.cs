@@ -3,153 +3,108 @@ using Avalonia.Media.TextFormatting;
 using Avalonia.Utilities;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
-namespace Notepad.NeoEdit
+namespace Notepad.NeoEdit;
+
+public enum SyntaxLanguage
 {
-    public enum SyntaxLanguage
+    Plain, CSharp, Json, Xml, Python, JavaScript, Html, Sql
+}
+
+internal static class SyntaxMatcher
+{
+    private enum Token { Keyword, String, Comment, Number, Type }
+    private static readonly IBrush[] Light = new[] { "#A626A4", "#40791E", "#626875", "#986801", "#925A05" }.Select(Brush.Parse).ToArray();
+    private static readonly IBrush[] Dark = new[] { "#DDA5F2", "#9DDC80", "#A3AAB6", "#E6B572", "#F4C591" }.Select(Brush.Parse).ToArray();
+
+    private const string DoubleQuoted = "\\x22(?:\\\\.|[^\\x22\\\\])*\\x22";
+    private const string SingleQuoted = @"'(?:\\.|[^'\\])*'";
+    private const string Number = @"\b\d+(?:\.\d+)?\b";
+
+    private sealed record Highlighter(Regex Pattern, Token[] Tokens);
+
+    private static readonly Highlighter Xml = Build(
+        (Token.Comment, @"<!--.*?-->"), (Token.Keyword, @"</?[\w:.-]+|/?>"),
+        (Token.String, DoubleQuoted + "|" + SingleQuoted));
+    private static readonly Dictionary<SyntaxLanguage, Highlighter> Rules = new()
     {
-        Plain, CSharp, Json, Xml, Python, JavaScript, Html, Sql
+        [SyntaxLanguage.CSharp] = Build(
+            (Token.Comment, "//.*$"),
+            (Token.String, DoubleQuoted + "|" + SingleQuoted),
+            (Token.Keyword, Words("public|private|protected|internal|class|struct|enum|interface|return|if|else|for|foreach|while|switch|case|break|continue|using|namespace|static|readonly|async|await|new")),
+            (Token.Type, Words("void|int|string|bool|double|float|var|object|char|byte|long|decimal") + @"|\b[A-Z]\w+\b"),
+            (Token.Number, Number)),
+        [SyntaxLanguage.Json] = Build(
+            (Token.Keyword, DoubleQuoted + @"(?=\s*:)"),
+            (Token.String, DoubleQuoted), (Token.Number, Number + "|" + Words("true|false|null"))),
+        [SyntaxLanguage.Python] = Build(
+            (Token.Comment, "#.*$"), (Token.String, DoubleQuoted + "|" + SingleQuoted),
+            (Token.Keyword, Words("def|class|if|elif|else|while|for|in|return|import|from|as|try|except|finally|with|lambda|pass|break|continue|True|False|None")),
+            (Token.Number, Number)),
+        [SyntaxLanguage.JavaScript] = Build(
+            (Token.Comment, "//.*$"), (Token.String, DoubleQuoted + "|" + SingleQuoted + @"|\x60(?:\\.|[^\\\x60])*\x60"),
+            (Token.Keyword, Words("function|const|let|var|if|else|for|while|return|import|export|default|class|extends|new|this|async|await")),
+            (Token.Number, Number)),
+        [SyntaxLanguage.Xml] = Xml,
+        [SyntaxLanguage.Html] = Xml,
+        [SyntaxLanguage.Sql] = Build(
+            (Token.Comment, @"--.*$|/\*.*?\*/"),
+            (Token.String, @"'(?:''|[^'])*'"),
+            (Token.Keyword, "(?i:" + Words("select|from|where|as|and|or|not|join|on|distinct|union|all|insert|into|values|update|set|delete|create|alter|drop|table|group|by|order|having|count|case|when|then|else|end|null|limit|offset") + ")"),
+            (Token.Number, Number))
+    };
+
+    private static string Words(string alternatives) => @"\b(?:" + alternatives + @")\b";
+
+    private static Highlighter Build(params (Token Token, string Pattern)[] rules)
+    {
+        var regex = new Regex(string.Join("|", rules.Select(rule => $"(?<{rule.Token}>{rule.Pattern})")),
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(75));
+        return new(regex, regex.GetGroupNames().Skip(1).Select(Enum.Parse<Token>).ToArray());
     }
 
-    public class SyntaxTheme
+    public static SyntaxLanguage DetectLanguage(string filePath) =>
+        Path.GetExtension(filePath)?.ToLowerInvariant() switch
+        {
+            ".cs" => SyntaxLanguage.CSharp,
+            ".json" => SyntaxLanguage.Json,
+            ".xml" or ".xaml" or ".csproj" => SyntaxLanguage.Xml,
+            ".html" or ".htm" => SyntaxLanguage.Html,
+            ".js" or ".ts" => SyntaxLanguage.JavaScript,
+            ".py" => SyntaxLanguage.Python,
+            ".sql" => SyntaxLanguage.Sql,
+            _ => SyntaxLanguage.Plain
+        };
+
+    public static List<ValueSpan<TextRunProperties>>? GetOverrides(string text, SyntaxLanguage language,
+        Typeface typeface, double fontSize, bool dark)
     {
-        public IBrush Default { get; }
-        public IBrush Keyword { get; }   // public, class, if
-        public IBrush String { get; }    // "hello"
-        public IBrush Comment { get; }   // // comment
-        public IBrush Number { get; }    // 123
-        public IBrush Type { get; }      // void, int, var
-        public IBrush Function { get; }  // Method()
+        if (!Rules.TryGetValue(language, out var highlighter)) return null;
 
-        // Atom One Light Palette
-        public SyntaxTheme()
+        var styles = new List<ValueSpan<TextRunProperties>>();
+        var palette = dark ? Dark : Light;
+        var properties = new TextRunProperties?[palette.Length];
+        try
         {
-            Default = Brush.Parse("#383A42");
-            Keyword = Brush.Parse("#A626A4"); // Purple
-            String = Brush.Parse("#50A14F");  // Green
-            Comment = Brush.Parse("#A0A1A7"); // Grey
-            Number = Brush.Parse("#986801");  // Orange
-            Type = Brush.Parse("#C18401");    // Dark Orange
-            Function = Brush.Parse("#4078F2");// Blue
-        }
-    }
-
-    public static class SyntaxMatcher
-    {
-        private static readonly SyntaxTheme Theme = new();
-
-        // Registry of Rules per Language
-        private static readonly Dictionary<SyntaxLanguage, List<(Regex Rule, IBrush Brush)>> Rules = new();
-
-        static SyntaxMatcher()
-        {
-            // --- C# Rules ---
-
-            var csharp = new List<(Regex, IBrush)>();
-
-            // 1. Comments (Grey) - Priority 1 (Match these first so they don't get colored as keywords)
-            csharp.Add((new Regex(@"//.*$", RegexOptions.Compiled), Theme.Comment));
-
-            // 2. Strings (Green)
-            csharp.Add((new Regex(@""".*?""", RegexOptions.Compiled), Theme.String));
-
-            // 3. Keywords (Purple) - Control flow, modifiers
-            csharp.Add((new Regex(@"\b(public|private|protected|internal|class|struct|enum|interface|return|if|else|for|foreach|while|switch|case|break|continue|using|namespace|static|readonly|async|await|new)\b", RegexOptions.Compiled), Theme.Keyword));
-
-            // 4. Primitive Types (Orange/Gold) - MOVED HERE
-            csharp.Add((new Regex(@"\b(void|int|string|bool|double|float|var|object|char|byte|long|decimal)\b", RegexOptions.Compiled), Theme.Type));
-
-            // 5. Likely Class Names (Orange/Gold) - Heuristic: Starts with Uppercase, usually a Type
-            // This makes "Console", "Math", "HelloWorld" orange.
-            csharp.Add((new Regex(@"\b[A-Z]\w+\b", RegexOptions.Compiled), Theme.Type));
-
-            // 6. Numbers
-            csharp.Add((new Regex(@"\b\d+\b", RegexOptions.Compiled), Theme.Number));
-
-            Rules[SyntaxLanguage.CSharp] = csharp;
-
-            // --- JSON Rules ---
-            var json = new List<(Regex, IBrush)>();
-            json.Add((new Regex(@""".*?""(?=\s*:)", RegexOptions.Compiled), Theme.Keyword)); // Keys
-            json.Add((new Regex(@":\s*("".*?"")", RegexOptions.Compiled), Theme.String));    // Values
-            json.Add((new Regex(@"\b(true|false|null)\b", RegexOptions.Compiled), Theme.Number));
-            json.Add((new Regex(@"\b\d+(\.\d+)?\b", RegexOptions.Compiled), Theme.Number));
-            Rules[SyntaxLanguage.Json] = json;
-
-            // --- Python Rules ---
-            var python = new List<(Regex, IBrush)>();
-            python.Add((new Regex(@"#.*$", RegexOptions.Compiled), Theme.Comment));
-            python.Add((new Regex(@""".*?""|'.*?'", RegexOptions.Compiled), Theme.String));
-            python.Add((new Regex(@"\b(def|class|if|elif|else|while|for|in|return|import|from|as|try|except|finally|with|lambda|pass|break|continue|True|False|None)\b", RegexOptions.Compiled), Theme.Keyword));
-            python.Add((new Regex(@"\b\d+\b", RegexOptions.Compiled), Theme.Number));
-            Rules[SyntaxLanguage.Python] = python;
-
-            // --- XML/HTML Rules ---
-            var xml = new List<(Regex, IBrush)>();
-            xml.Add((new Regex(@"<!--[\s\S]*?-->", RegexOptions.Compiled), Theme.Comment));
-            xml.Add((new Regex(@"</?\w+", RegexOptions.Compiled), Theme.Keyword)); // Tags
-            xml.Add((new Regex(@""".*?""", RegexOptions.Compiled), Theme.String)); // Attributes
-            xml.Add((new Regex(@">", RegexOptions.Compiled), Theme.Keyword));
-            Rules[SyntaxLanguage.Xml] = xml;
-            Rules[SyntaxLanguage.Html] = xml;
-
-            // --- JavaScript Rules ---
-            var js = new List<(Regex, IBrush)>();
-            js.Add((new Regex(@"//.*$", RegexOptions.Compiled), Theme.Comment));
-            js.Add((new Regex(@""".*?""|'.*?'|`.*?`", RegexOptions.Compiled), Theme.String));
-            js.Add((new Regex(@"\b(function|const|let|var|if|else|for|while|return|import|export|default|class|extends|new|this|async|await)\b", RegexOptions.Compiled), Theme.Keyword));
-            js.Add((new Regex(@"\b\d+\b", RegexOptions.Compiled), Theme.Number));
-            Rules[SyntaxLanguage.JavaScript] = js;
-        }
-
-        public static SyntaxLanguage DetectLanguage(string filePath)
-        {
-            if (string.IsNullOrEmpty(filePath)) return SyntaxLanguage.Plain;
-            string ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
-
-            return ext switch
+            foreach (Match match in highlighter.Pattern.Matches(text))
             {
-                ".cs" => SyntaxLanguage.CSharp,
-                ".json" => SyntaxLanguage.Json,
-                ".xml" or ".xaml" or ".csproj" => SyntaxLanguage.Xml,
-                ".html" or ".htm" => SyntaxLanguage.Html,
-                ".js" or ".ts" => SyntaxLanguage.JavaScript,
-                ".py" => SyntaxLanguage.Python,
-                ".sql" => SyntaxLanguage.Sql,
-                _ => SyntaxLanguage.Plain
-            };
-        }
-
-        // NEW METHOD: Returns a list of styles instead of modifying a layout
-        public static List<ValueSpan<TextRunProperties>>? GetOverrides(string text, SyntaxLanguage lang, Typeface typeface, double fontSize, IBrush defaultForeground)
-        {
-            if (lang == SyntaxLanguage.Plain || !Rules.ContainsKey(lang)) return null;
-
-            var overrides = new List<ValueSpan<TextRunProperties>>();
-
-            // We need a base set of properties to clone with different colors
-            var baseProps = new GenericTextRunProperties(typeface, fontSize, null, defaultForeground);
-
-            foreach (var (rule, brush) in Rules[lang])
-            {
-                foreach (Match m in rule.Matches(text))
+                for (int index = 0; index < highlighter.Tokens.Length; index++)
                 {
-                    // Create a specific property for this match (e.g., Green Brush)
-                    var highlightProps = new GenericTextRunProperties(typeface, fontSize, null, brush);
-
-                    // Add the span (Index, Length, Properties)
-                    overrides.Add(new ValueSpan<TextRunProperties>(m.Index, m.Length, highlightProps));
+                    if (!match.Groups[index + 1].Success) continue;
+                    int token = (int)highlighter.Tokens[index];
+                    var style = properties[token] ??= new GenericTextRunProperties(typeface, fontSize, null, palette[token]);
+                    styles.Add(new ValueSpan<TextRunProperties>(match.Index, match.Length, style));
+                    break;
                 }
             }
-
-            // Optimziation: TextLayout prefers sorted spans, though mostly handles unsorted.
-            // If overlapping spans occur, later ones usually win or it gets complex. 
-            // For this simple regex engine, just returning the list is usually fine.
-            return overrides;
         }
+        catch (RegexMatchTimeoutException)
+        {
+            // Let an unusually large or malformed line render with the styles already found.
+        }
+        return styles.Count == 0 ? null : styles;
     }
 }

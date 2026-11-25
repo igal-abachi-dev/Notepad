@@ -127,6 +127,85 @@ public class SearchServiceTests
     }
 
     [AvaloniaFact]
+    public void Find_WrapUsesDisjointWindowsAndDoesNotMarkMissesAsWrapped()
+    {
+        var editor = CreateEditor("aba");
+        editor.CaretOffset = 1;
+        var settings = new SearchSettings { SearchString = "aba", WrapAround = true };
+        var service = new SearchService();
+        Assert.Equal((null, false), service.FindNext(editor, settings));
+        Assert.Equal((null, false), service.FindPrevious(editor, settings));
+    }
+
+    [AvaloniaFact]
+    public void FindPrevious_OverlappingCandidates_AreEvaluatedFromTheRight()
+    {
+        var editor = CreateEditor("a-a-ab");
+        editor.CaretOffset = 6;
+        var settings = new SearchSettings { SearchString = "a-a", WholeWord = true };
+        var service = new SearchService();
+        Assert.Equal(new SearchResult(0, 3), service.FindPrevious(editor, settings).result);
+
+        editor.LoadDocument("ababa");
+        editor.CaretOffset = 5;
+        settings = new() { SearchString = "aba", UseRegex = true };
+        Assert.Equal(new SearchResult(2, 3), service.FindPrevious(editor, settings).result);
+    }
+
+    [AvaloniaFact]
+    public void FindNext_ZeroWidthAdvancesAndCanWrapToADifferentPosition()
+    {
+        var editor = CreateEditor("a a");
+        var settings = new SearchSettings { SearchString = "(?=a)", UseRegex = true, WrapAround = true };
+        var service = new SearchService();
+        var first = service.FindNext(editor, settings);
+        Assert.Equal((new SearchResult(0, 0), false), first);
+        editor.SetSelection(first.result!.StartOffset, 0);
+        var second = service.FindNext(editor, settings);
+        Assert.Equal((new SearchResult(2, 0), false), second);
+        editor.SetSelection(second.result!.StartOffset, 0);
+        Assert.Equal((new SearchResult(0, 0), true), service.FindNext(editor, settings));
+
+        settings.SearchString = "$";
+        Assert.Equal(new SearchResult(3, 0), service.FindNext(editor, settings).result);
+        editor.CaretOffset = 3;
+        Assert.Equal((null, false), service.FindNext(editor, settings));
+    }
+
+    [AvaloniaFact]
+    public void ReplaceNext_SelectsBeforeReplacingAndSelectsTheFollowingMatch()
+    {
+        var editor = CreateEditor("one one");
+        var settings = new SearchSettings { SearchString = "one", ReplaceString = "two" };
+        var service = new SearchService();
+
+        Assert.Equal(0, service.ReplaceNext(editor, settings));
+        Assert.Equal("one one", editor.GetText());
+        Assert.Equal((0, 3), (editor.SelectionStart, editor.SelectionLength));
+        Assert.Equal(1, service.ReplaceNext(editor, settings));
+        Assert.Equal("two one", editor.GetText());
+        Assert.Equal((4, 3), (editor.SelectionStart, editor.SelectionLength));
+        editor.Undo();
+        Assert.Equal((0, 3), (editor.SelectionStart, editor.SelectionLength));
+        Assert.Equal("one one", editor.GetText());
+    }
+
+    [AvaloniaFact]
+    public void ReplaceAll_MapsCaretAndCannotSplitASurrogatePair()
+    {
+        var editor = CreateEditor("ab");
+        editor.CaretOffset = 1;
+        var service = new SearchService();
+        Assert.Equal(1, service.ReplaceAll(editor, new() { SearchString = "ab", ReplaceString = "\U0001F600" }));
+        Assert.Equal(2, editor.CaretOffset);
+        Assert.Equal(0, service.ReplaceAll(editor, new() { SearchString = ".", UseRegex = true }));
+        Assert.Equal("\U0001F600", editor.GetText());
+        editor.Undo();
+        Assert.Equal("ab", editor.GetText());
+        Assert.Equal(1, editor.CaretOffset);
+    }
+
+    [AvaloniaFact]
     public void Search_InvalidRegex_ReportsErrorWithoutChangingText()
     {
         var editor = CreateEditor("cat");

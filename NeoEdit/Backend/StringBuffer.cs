@@ -1,25 +1,36 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace Notepad.NeoEdit.Backend;
 
-public class StringBuffer
+internal sealed class StringBuffer
 {
-    // Optimization: StringBuilder prevents O(N^2) allocations during typing
-    public StringBuilder Content { get; private set; }
-    public List<int> LineStarts { get; private set; }
+    private readonly string? _original;
+    private readonly StringBuilder? _added;
+    public List<int> LineStarts { get; } = [0];
+    public int Length => _original?.Length ?? _added!.Length;
+    public char this[int offset] => _original != null ? _original[offset] : _added![offset];
+
+    public StringBuffer() => _added = new StringBuilder();
 
     public StringBuffer(string content)
     {
-        Content = new StringBuilder(content);
-        LineStarts = new List<int> { 0 };
+        _original = content;
         AddLineStarts(content, 0);
+    }
+
+    public void CopyTo(int offset, Span<char> destination)
+    {
+        if (_original != null) _original.AsSpan(offset, destination.Length).CopyTo(destination);
+        else _added!.CopyTo(offset, destination, destination.Length);
     }
 
     public void Append(string text)
     {
-        int startOffset = Content.Length;
-        Content.Append(text);
+        if (_added == null) throw new InvalidOperationException("The original buffer is read-only.");
+        int startOffset = _added.Length;
+        _added.Append(text);
         AddLineStarts(text, startOffset);
     }
 
