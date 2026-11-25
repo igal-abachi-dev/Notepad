@@ -113,6 +113,48 @@ public class DialogWorkflowTests
         Assert.Equal(bytes, await File.ReadAllBytesAsync(original));
     }
 
+    [AvaloniaFact]
+    public async Task FilePicker_FiltersEntriesAndKeepsSaveOpenWhenOverwriteIsDeclined()
+    {
+        using var fixture = new MainWindowFixture();
+        string existing = Path.Combine(fixture.Folder, "existing.txt");
+        Directory.CreateDirectory(Path.Combine(fixture.Folder, "folder"));
+        await File.WriteAllTextAsync(existing, "original");
+        await File.WriteAllTextAsync(Path.Combine(fixture.Folder, "other.md"), "markdown");
+        var picker = new FilePickerDialog(existing, null, FileEncodingType.UTF8);
+        var result = picker.ShowDialog<FilePickerDialog.Choice?>(fixture.Window);
+        var files = picker.FindControl<ListBox>("Entries")!;
+        await UntilAsync(() => files.Items.Count == 2);
+        Assert.Equal(new[] { "folder", "existing.txt" }, files.Items.OfType<FilePickerEntry>().Select(entry => entry.Name));
+        picker.FindControl<ComboBox>("FilterBox")!.SelectedIndex = 1;
+        await UntilAsync(() => files.Items.Count == 3);
+
+        var name = picker.FindControl<TextBox>("FileNameBox")!;
+        Assert.Equal("existing.txt", name.Text);
+        DefaultButton(picker).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await UntilAsync(() => picker.OwnedWindows.Count != 0);
+        var overwrite = Assert.Single(picker.OwnedWindows);
+        DefaultButton(overwrite).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.True(picker.IsVisible);
+        Assert.False(result.IsCompleted);
+
+        name.Text = "extensionless";
+        DefaultButton(picker).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(new FilePickerDialog.Choice(Path.Combine(fixture.Folder, "extensionless"), FileEncodingType.UTF8),
+            await result.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal("original", await File.ReadAllTextAsync(existing));
+    }
+
+    private static async Task UntilAsync(Func<bool> ready)
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            if (ready()) return;
+            await Task.Delay(10);
+        }
+        Assert.True(ready(), "The file picker did not finish the requested operation.");
+    }
+
     private static async Task<Window> WaitForInvalidEncodingPrompt(Window owner)
     {
         for (int attempt = 0; attempt < 100; attempt++)
