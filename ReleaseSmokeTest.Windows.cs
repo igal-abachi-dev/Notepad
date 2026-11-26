@@ -22,10 +22,11 @@ internal static partial class ReleaseSmokeTest
     private static async Task<string> ExerciseWindowsAsync(MainWindow window, string directory)
     {
         nint hwnd = window.TryGetPlatformHandle()!.Handle;
+        WindowsRecentDocuments.VerifyLink(Path.Combine(directory, "Jump List document.txt"));
         string printCheck = await VerifyPdfSpoolAsync(directory);
         VerifyImeRequests(window, hwnd);
         VerifySessionEnd(window);
-        return "Windows smoke passed: IME geometry and reconversion requests, " +
+        return "Windows smoke passed: Jump List link construction, IME geometry and reconversion requests, " +
             "cancelled sign-out and confirmed sign-out with draft recovery." + Environment.NewLine + printCheck;
     }
 

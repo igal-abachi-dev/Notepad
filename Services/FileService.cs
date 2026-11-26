@@ -4,7 +4,6 @@ using NotepadAvalonia.Models;
 using System.Text;
 using System.Threading.Tasks;
 using System;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Text.Unicode;
@@ -256,29 +255,19 @@ public class FileService
         }
 
         int pairs = count / 2;
-        if (pairs == 0) return null;
+        if (pairs < 4) return null; // Very short NUL-containing UTF-8 can look like UTF-16.
 
         // If almost all even bytes are 0, likely BE; if almost all odd bytes are 0, likely LE
-        if (oddZeros > evenZeros && oddZeros > pairs * 0.6) return FileEncodingType.UTF16LE;
-        if (evenZeros > oddZeros && evenZeros > pairs * 0.6) return FileEncodingType.UTF16BE;
-
-        if (OperatingSystem.IsWindows())
+        FileEncodingType? candidate = oddZeros > evenZeros && oddZeros > pairs * 0.6 ? FileEncodingType.UTF16LE
+            : evenZeros > oddZeros && evenZeros > pairs * 0.6 ? FileEncodingType.UTF16BE : null;
+        if (candidate == null) return null;
+        try
         {
-            const int littleEndianTests = 0x0001 | 0x0002;
-            const int bigEndianTests = 0x0010 | 0x0020;
-            int flags = littleEndianTests | bigEndianTests;
-            IsTextUnicode(bytes, bytes.Length, ref flags);
-            if ((flags & littleEndianTests) != 0 && (flags & bigEndianTests) == 0)
-                return FileEncodingType.UTF16LE;
-            if ((flags & bigEndianTests) != 0 && (flags & littleEndianTests) == 0)
-                return FileEncodingType.UTF16BE;
+            _ = GetEncoding(candidate.Value).GetCharCount(bytes);
+            return candidate;
         }
-
-        return null;
+        catch (DecoderFallbackException) { return null; }
     }
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool IsTextUnicode(byte[] buf, int len, ref int lpi);
 }
 
 public sealed record LoadedFile(string Content, Encoding Encoding, FileEncodingType EncodingType,

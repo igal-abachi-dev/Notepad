@@ -14,7 +14,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -99,7 +98,6 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(EditorFontSize));
         OnPropertyChanged(nameof(EditorFontWeight));
         OnPropertyChanged(nameof(EditorFontStyle));
-        OnPropertyChanged(nameof(CanUseGoToLine));
         UpdateEncodingDisplay();
     }
 
@@ -112,6 +110,7 @@ public partial class MainWindowViewModel : ObservableObject
         editor.TextChanged += OnEditorTextChanged;
         editor.CaretMoved += OnEditorCaretMoved;
         editor.ZoomRequested += OnEditorZoomRequested;
+        editor.WebLinkRequested += OnEditorWebLinkRequested;
         ResetEditor(_loadedContent);
     }
 
@@ -122,6 +121,7 @@ public partial class MainWindowViewModel : ObservableObject
         editor.TextChanged -= OnEditorTextChanged;
         editor.CaretMoved -= OnEditorCaretMoved;
         editor.ZoomRequested -= OnEditorZoomRequested;
+        editor.WebLinkRequested -= OnEditorWebLinkRequested;
         EditorControl = null;
     }
 
@@ -174,11 +174,15 @@ public partial class MainWindowViewModel : ObservableObject
             Document.IsModified = editor.IsModified;
             OnPropertyChanged(nameof(Document));
         }
+        if (!Settings.WindowsOnlyLineEndings && EditorControl is { } active)
+            SetDocumentLineEnding(active.NewLine);
         ScheduleDraftCheckpoint();
         UpdateStatus();
     }
 
     private void OnEditorZoomRequested(object? sender, int direction) => SetZoom(Settings.ZoomLevel + direction * 10);
+
+    private async void OnEditorWebLinkRequested(object? sender, Uri uri) => await LaunchAsync(uri.AbsoluteUri);
 
     public double EditorFontSize => Settings.FontSize * 96.0 / 72.0 * Settings.ZoomLevel / 100.0;
     public bool IsSystemTheme => Settings.Theme == EditorTheme.System;
@@ -422,20 +426,41 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    public bool CanUseGoToLine => !Settings.WordWrap;
+
+    partial void OnSettingsChanged(EditorSettings? oldValue, EditorSettings newValue)
+    {
+        if (oldValue != null) oldValue.PropertyChanged -= OnEditorSettingsPropertyChanged;
+        newValue.PropertyChanged += OnEditorSettingsPropertyChanged;
+        NotifyGoToLineAvailability();
+    }
+
+    private void OnEditorSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(EditorSettings.WordWrap))
+            NotifyGoToLineAvailability();
+    }
+
+    private void NotifyGoToLineAvailability()
+    {
+        OnPropertyChanged(nameof(CanUseGoToLine));
+        GoToLineCommand.NotifyCanExecuteChanged();
+    }
+
     /// <summary>
     /// Maps to: Command ID 24 (Go To dialog)
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanUseGoToLine))]
     private async Task GoToLineAsync()
     {
-        if (Settings.WordWrap || EditorControl == null) return;
-        var dialog = new GoToLineDialog(EditorControl.LineCount, CaretLine);
+        if (!CanUseGoToLine || EditorControl is not { } editor) return;
+        var dialog = new GoToLineDialog(editor.LineCount, CaretLine);
         var result = await dialog.ShowDialog<int?>(GetMainWindow());
 
-        if (result.HasValue)
+        if (result.HasValue && EditorControl == editor && CanUseGoToLine)
         {
-            EditorControl.ScrollToLine(result.Value - 1); // 0-based
-            EditorControl.MoveCaretToLine(result.Value - 1);
+            editor.ScrollToLine(result.Value - 1);
+            editor.MoveCaretToLine(result.Value - 1);
         }
     }
 
@@ -444,18 +469,21 @@ public partial class MainWindowViewModel : ObservableObject
     private void ShowFindOrReplaceDialog(bool findMode)
     {
         if (OwnerWindow is not { } owner) return;
+        string? seed = null;
+        if (EditorControl?.SelectionLength is > 0 and <= 127)
+        {
+            string selected = EditorControl.GetSelectedText();
+            if (!selected.AsSpan().ContainsAny('\r', '\n')) seed = selected;
+        }
         if (_findReplaceDialog != null && _findReplaceDialog.DataContext is FindReplaceViewModel current &&
             current.IsFindMode == findMode)
         {
+            if (seed != null) current.FindText = seed;
             _findReplaceDialog.Activate();
             _findReplaceDialog.FocusQuery();
             return;
         }
-        if (EditorControl?.SelectionLength is > 0 and <= 127)
-        {
-            string seed = EditorControl.GetSelectedText();
-            if (!seed.Contains('\r') && !seed.Contains('\n')) SearchSettings.SearchString = seed;
-        }
+        if (seed != null) SearchSettings.SearchString = seed;
         if (_findReplaceDialog != null)
         {
             _findReplaceDialog.DataContext = new FindReplaceViewModel(this, findMode);
@@ -480,7 +508,6 @@ public partial class MainWindowViewModel : ObservableObject
         Settings.WordWrap = !Settings.WordWrap;
 
         OnPropertyChanged(nameof(Settings));
-        OnPropertyChanged(nameof(CanUseGoToLine));
         PersistSettings();
     }
 
@@ -537,6 +564,21 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void ToggleUnicodeControls()
+    {
+        Settings.ShowUnicodeControls = !Settings.ShowUnicodeControls;
+        OnPropertyChanged(nameof(Settings));
+        PersistSettings();
+    }
+
+    [RelayCommand]
+    private void InsertUnicodeControl(string? character)
+    {
+        if (character?.Length == 1 && NeoEditor.UnicodeControlName(character[0]) != null)
+            EditorControl?.InsertAtCaret(character);
+    }
+
+    [RelayCommand]
     private void TogglePreservePasteLineEndings()
     {
         Settings.PreservePastedLineEndings = !Settings.PreservePastedLineEndings;
@@ -557,6 +599,27 @@ public partial class MainWindowViewModel : ObservableObject
         }
         OnPropertyChanged(nameof(Settings));
         PersistSettings();
+    }
+
+    [RelayCommand]
+    private void ConvertLineEndings(LineEndingStyle style)
+    {
+        if (EditorControl is not { } editor) return;
+        if (Settings.WindowsOnlyLineEndings && style != LineEndingStyle.CRLF)
+            ToggleWindowsOnlyLineEndings();
+        string ending = style switch { LineEndingStyle.LF => "\n", LineEndingStyle.CR => "\r", _ => "\r\n" };
+        editor.ConvertLineEndings(ending);
+        SetDocumentLineEnding(ending);
+        ScheduleDraftCheckpoint();
+    }
+
+    private void SetDocumentLineEnding(string ending)
+    {
+        var style = ending switch { "\n" => LineEndingStyle.LF, "\r" => LineEndingStyle.CR, _ => LineEndingStyle.CRLF };
+        if (Document.LineEnding == style) return;
+        Document.LineEnding = style;
+        Document.DraftVersion = -1;
+        LineEndingText = style.ToString();
     }
 
     [RelayCommand]
@@ -671,8 +734,6 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    public bool CanUseGoToLine => !Settings.WordWrap;
-
     private void AddRecentFile(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
@@ -686,11 +747,8 @@ public partial class MainWindowViewModel : ObservableObject
             RecentFiles.RemoveAt(RecentFiles.Count - 1);
         }
         if (OperatingSystem.IsWindows() && OwnerWindow?.TryGetPlatformHandle()?.HandleDescriptor == "HWND")
-            SHAddToRecentDocs(3, path); // SHARD_PATHW
+            WindowsRecentDocuments.Add(path);
     }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern void SHAddToRecentDocs(uint kind, string path);
 
     private Window GetMainWindow() => OwnerWindow ??
         (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow ??

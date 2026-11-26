@@ -37,6 +37,10 @@ public sealed partial class NeoEditor : ILogicalScrollable
         AvaloniaProperty.Register<NeoEditor, bool>(nameof(ShowLineNumbers), true);
     public static readonly StyledProperty<bool> RightToLeftReadingOrderProperty =
         AvaloniaProperty.Register<NeoEditor, bool>(nameof(RightToLeftReadingOrder));
+    public static readonly StyledProperty<bool> ShowUnicodeControlsProperty =
+        AvaloniaProperty.Register<NeoEditor, bool>(nameof(ShowUnicodeControls));
+    internal static readonly StyledProperty<bool> PreferRightToLeftForNeutralTextProperty =
+        AvaloniaProperty.Register<NeoEditor, bool>(nameof(PreferRightToLeftForNeutralText));
 
     public FontFamily FontFamily { get => GetValue(FontFamilyProperty); set => SetValue(FontFamilyProperty, value); }
     public double FontSize { get => GetValue(FontSizeProperty); set => SetValue(FontSizeProperty, value); }
@@ -49,6 +53,8 @@ public sealed partial class NeoEditor : ILogicalScrollable
     public bool WordWrap { get => GetValue(WordWrapProperty); set => SetValue(WordWrapProperty, value); }
     public bool ShowLineNumbers { get => GetValue(ShowLineNumbersProperty); set => SetValue(ShowLineNumbersProperty, value); }
     public bool RightToLeftReadingOrder { get => GetValue(RightToLeftReadingOrderProperty); set => SetValue(RightToLeftReadingOrderProperty, value); }
+    public bool ShowUnicodeControls { get => GetValue(ShowUnicodeControlsProperty); set => SetValue(ShowUnicodeControlsProperty, value); }
+    internal bool PreferRightToLeftForNeutralText { get => GetValue(PreferRightToLeftForNeutralTextProperty); set => SetValue(PreferRightToLeftForNeutralTextProperty, value); }
 
     private const double Padding = 5;
     private const int TabSize = 4;
@@ -66,7 +72,8 @@ public sealed partial class NeoEditor : ILogicalScrollable
     private bool _extentUpdateQueued;
     private bool _wrappedRowEnd;
 
-    private sealed record LineLayout(TextLayout Layout, int Length, int[]? TabOffsets, FlowDirection Direction, bool HasBidi)
+    private sealed record LineLayout(TextLayout Layout, int Length, int[]? TabOffsets, FlowDirection Direction, bool HasBidi,
+        List<(int Offset, string Name)>? Controls)
     {
         public int ToVisual(int offset) => TabOffsets?[Math.Clamp(offset, 0, Length)] ?? Math.Clamp(offset, 0, Length);
 
@@ -135,7 +142,8 @@ public sealed partial class NeoEditor : ILogicalScrollable
             change.Property == FontStyleProperty || change.Property == FontWeightProperty ||
             change.Property == WordWrapProperty || change.Property == ShowLineNumbersProperty ||
             change.Property == ForegroundProperty || change.Property == LanguageProperty ||
-            change.Property == RightToLeftReadingOrderProperty || change.Property == ThemeVariantScope.ActualThemeVariantProperty)
+            change.Property == RightToLeftReadingOrderProperty || change.Property == PreferRightToLeftForNeutralTextProperty ||
+            change.Property == ShowUnicodeControlsProperty || change.Property == ThemeVariantScope.ActualThemeVariantProperty)
         {
             _preferredCaretX = null;
             InvalidateDocumentLayout();
@@ -295,7 +303,13 @@ public sealed partial class NeoEditor : ILogicalScrollable
                 break;
             }
         }
-        return new LineLayout(layout, text.Length, offsets, direction, hasBidi);
+        List<(int, string)>? controls = null;
+        if (ShowUnicodeControls)
+        {
+            for (int i = 0; i < text.Length; i++)
+                if (UnicodeControlName(text[i]) is { } name) (controls ??= []).Add((i, name));
+        }
+        return new LineLayout(layout, text.Length, offsets, direction, hasBidi, controls);
     }
 
     private FlowDirection DirectionOf(string text)
@@ -303,12 +317,22 @@ public sealed partial class NeoEditor : ILogicalScrollable
         if (RightToLeftReadingOrder) return FlowDirection.RightToLeft;
         foreach (var rune in text.EnumerateRunes())
         {
+            if (rune.Value is 0x200F or 0x061C) return FlowDirection.RightToLeft;
+            if (rune.Value == 0x200E) return FlowDirection.LeftToRight;
             if (!Rune.IsLetter(rune)) continue;
             return IsRtlLetter(rune)
                 ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
         }
-        return FlowDirection.LeftToRight;
+        return PreferRightToLeftForNeutralText ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
     }
+
+    internal static string? UnicodeControlName(char character) => character switch
+    {
+        '\0' => "NUL", '\u061C' => "ALM", '\u200B' => "ZWSP", '\u200C' => "ZWNJ", '\u200D' => "ZWJ",
+        '\u200E' => "LRM", '\u200F' => "RLM", '\u202A' => "LRE", '\u202B' => "RLE", '\u202C' => "PDF",
+        '\u202D' => "LRO", '\u202E' => "RLO", '\u2060' => "WJ", '\u2066' => "LRI", '\u2067' => "RLI",
+        '\u2068' => "FSI", '\u2069' => "PDI", '\uFEFF' => "BOM", _ => null
+    };
 
     private static bool IsRtlLetter(Rune rune) => Rune.IsLetter(rune) &&
         rune.Value is >= 0x0590 and <= 0x08FF or >= 0xFB1D and <= 0xFEFC or >= 0x1E800 and <= 0x1EEFF;
@@ -398,11 +422,44 @@ public sealed partial class NeoEditor : ILogicalScrollable
                         Math.Max(3, FontSize / 2), LineHeight));
                 }
                 row.Layout.Draw(context, origin);
+                if (row.Controls != null)
+                {
+                    foreach (var (offset, name) in row.Controls)
+                    {
+                        var boundary = row.Layout.HitTestTextPosition(row.ToVisual(offset));
+                        var marker = origin + new Vector(boundary.X, boundary.Y);
+                        if (marker.X < TextLeft - FontSize * 2 || marker.X >= Bounds.Width ||
+                            marker.Y + LineHeight < 0 || marker.Y >= Bounds.Height) continue;
+                        using var label = new TextLayout(name, Typeface, Math.Max(6, FontSize * 0.55), Foreground);
+                        var box = new Rect(marker, new Size(label.Width + 2, label.Height));
+                        context.FillRectangle(Background, box);
+                        context.DrawRectangle(SelectionBrush, new Pen(Foreground, 0.5), box);
+                        label.Draw(context, marker + new Vector(1, 0));
+                    }
+                }
                 if (line == caretLine && IsFocused && (_caretVisible || _preeditText.Length > 0))
                 {
                     var hit = GetCaretHit(row, caretColumn);
                     var top = origin + new Vector(hit.X, hit.Y);
                     if (_preeditText.Length > 0) DrawComposition(context, top);
+                    else if (OvertypeMode)
+                    {
+                        double width = Math.Max(3, FontSize * 0.55);
+                        double x = top.X;
+                        int next = TextElementEdge(_caretOffset, 1, advance: true) - (_caretOffset - caretColumn);
+                        if (next > caretColumn && next <= row.Length && !row.HasBidi)
+                        {
+                            var edge = row.Layout.HitTestTextPosition(row.ToVisual(next));
+                            if (Math.Abs(edge.Y - hit.Y) < 0.01)
+                            {
+                                x = origin.X + Math.Min(hit.X, edge.X);
+                                width = Math.Max(3, Math.Abs(edge.X - hit.X));
+                            }
+                        }
+                        else if (row.Direction == FlowDirection.RightToLeft) x -= width;
+                        using (context.PushOpacity(0.48))
+                            context.FillRectangle(Foreground, new Rect(x, top.Y, width, LineHeight));
+                    }
                     else context.DrawLine(new Pen(Foreground), top, top + new Vector(0, LineHeight));
                 }
             }
@@ -458,16 +515,17 @@ public sealed partial class NeoEditor : ILogicalScrollable
         return new Rect(x, y, 1, segment.Height);
     }
 
-    private int GetOffsetAt(double x, double y, out bool wrappedRowEnd)
+    private int GetOffsetAt(double x, double y, out bool wrappedRowEnd, out bool insideText)
     {
         int line = LineAtY(y);
         var row = GetLineLayout(line);
-        return HitRow(line, row, x, y - TopOfLine(line), out wrappedRowEnd);
+        return HitRow(line, row, x, y - TopOfLine(line), out wrappedRowEnd, out insideText);
     }
 
-    private int HitRow(int line, LineLayout row, double x, double rowY, out bool wrappedRowEnd)
+    private int HitRow(int line, LineLayout row, double x, double rowY, out bool wrappedRowEnd, out bool insideText)
     {
         var hit = row.Layout.HitTestPoint(new Point(x - LeadingPadding(row), Math.Clamp(rowY, 0, row.Layout.Height)));
+        insideText = hit.IsInside && rowY >= 0 && rowY < row.Layout.Height;
         int leading = row.Layout.GetLineIndexFromCharacterIndex(hit.TextPosition, trailingEdge: false);
         int trailing = row.Layout.GetLineIndexFromCharacterIndex(hit.TextPosition, trailingEdge: true);
         wrappedRowEnd = leading != trailing && rowY < leading * LineHeight;
@@ -518,7 +576,7 @@ public sealed partial class NeoEditor : ILogicalScrollable
         double y = 0;
         for (int i = 0; i < target; i++) y += row.Layout.TextLines[i].Height;
         y += row.Layout.TextLines[target].Height / 2;
-        int offset = HitRow(line, row, _preferredCaretX.Value, y, out bool rowEnd);
+        int offset = HitRow(line, row, _preferredCaretX.Value, y, out bool rowEnd, out _);
         MoveSelection(selecting ? _anchorOffset : offset, offset, keepPreferredX: true, wrappedRowEnd: rowEnd);
     }
 
@@ -552,9 +610,18 @@ public sealed partial class NeoEditor : ILogicalScrollable
         if (e.Handled || !point.Properties.IsLeftButtonPressed) return;
         _inputMethod.Reset();
         Focus();
+        int offset = GetOffsetAt(point.Position.X - TextLeft + Offset.X, point.Position.Y + Offset.Y,
+            out bool rowEnd, out bool insideText);
+        if (e.KeyModifiers == KeyModifiers.Control && insideText && GetWebLinkAt(offset) is { } link &&
+            WebLinkRequested is { } request)
+        {
+            request(this, link);
+            e.Handled = true;
+            return;
+        }
         _selectionPointer = e.Pointer;
+        _lastDragPoint = point.Position;
         e.Pointer.Capture(this);
-        int offset = GetOffsetAt(point.Position.X - TextLeft + Offset.X, point.Position.Y + Offset.Y, out bool rowEnd);
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
         if (!shift && e.ClickCount > 2)
         {
@@ -602,7 +669,7 @@ public sealed partial class NeoEditor : ILogicalScrollable
         double x = Math.Clamp(p.X, TextLeft, Math.Max(TextLeft, Bounds.Width - 1));
         double y = Math.Clamp(p.Y, 0, Math.Max(0, Bounds.Height - 1));
         Offset += new Vector(Math.Clamp(p.X - x, -50, 50), Math.Clamp(p.Y - y, -3 * LineHeight, 3 * LineHeight));
-        int offset = GetOffsetAt(x - TextLeft + Offset.X, y + Offset.Y, out bool rowEnd);
+        int offset = GetOffsetAt(x - TextLeft + Offset.X, y + Offset.Y, out bool rowEnd, out _);
         MoveSelection(_anchorOffset, offset, wrappedRowEnd: rowEnd);
     }
 
@@ -611,6 +678,12 @@ public sealed partial class NeoEditor : ILogicalScrollable
         base.OnPointerReleased(e);
         if (e.Pointer == _selectionPointer)
         {
+            var release = e.GetPosition(this);
+            if (release != _lastDragPoint)
+            {
+                _lastDragPoint = release;
+                UpdateDragSelection();
+            }
             _selectionPointer = null;
             _dragScrollTimer?.Stop();
             e.Pointer.Capture(null);

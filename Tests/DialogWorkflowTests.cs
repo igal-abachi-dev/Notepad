@@ -152,7 +152,90 @@ public class DialogWorkflowTests
             if (ready()) return;
             await Task.Delay(10);
         }
-        Assert.True(ready(), "The file picker did not finish the requested operation.");
+        Assert.True(ready(), "The dialog did not finish the requested operation.");
+    }
+
+    [AvaloniaFact]
+    public async Task StartupMissingFile_AcceptingCreatesAnEmptyFileBeforeSave()
+    {
+        using var fixture = new MainWindowFixture();
+        string path = Path.Combine(fixture.Folder, "new script.txt");
+        var open = fixture.ViewModel.OpenStartupFileAsync(path.Replace('\\', '/'), null, print: false);
+        var prompt = Assert.Single(fixture.Window.OwnedWindows);
+        Assert.False(File.Exists(path));
+        DefaultButton(prompt).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await open.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, new FileInfo(path).Length);
+        Assert.False(fixture.ViewModel.Document.IsModified);
+        Assert.Equal(path, fixture.ViewModel.Document.FilePath);
+    }
+
+    [AvaloniaFact]
+    public async Task Find_WhenAlreadyOpenSeedsNewSelectionAndPastingTakesOnlyFirstLine()
+    {
+        using var fixture = new MainWindowFixture();
+        var editor = Assert.IsType<NeoEditor>(fixture.ViewModel.EditorControl);
+        editor.LoadDocument("first second");
+        editor.SetSelection(0, 5);
+        fixture.ViewModel.ShowFindDialogCommand.Execute(null);
+        var find = Assert.Single(fixture.Window.OwnedWindows.OfType<FindReplaceDialog>());
+        var query = find.FindControl<TextBox>("FindTextBox")!;
+        Assert.Equal("first", query.Text);
+        editor.SetSelection(6, 6);
+        fixture.ViewModel.ShowFindDialogCommand.Execute(null);
+        Assert.Same(find, Assert.Single(fixture.Window.OwnedWindows));
+        Assert.Equal("second", query.Text);
+        await find.Clipboard!.SetTextAsync("search\r\nignored");
+        find.UpdateLayout();
+        query.Focus();
+        query.SelectAll();
+        query.Paste();
+        await UntilAsync(() => query.Text == "search");
+        Assert.Equal("search", fixture.ViewModel.SearchSettings.SearchString);
+    }
+
+    [AvaloniaFact]
+    public async Task StatusBar_ConvertsLineEndingsAndShowsOvertypeMode()
+    {
+        using var fixture = new MainWindowFixture();
+        string path = Path.Combine(fixture.Folder, "mixed.txt");
+        await File.WriteAllTextAsync(path, "one\r\ntwo\r\nthree\nfour");
+        Assert.True(await fixture.ViewModel.LoadFileAsync(path));
+        var button = fixture.Window.FindControl<Button>("LineEndingButton")!;
+        Assert.Equal("CRLF", button.Content);
+        fixture.ViewModel.ConvertLineEndingsCommand.Execute(LineEndingStyle.LF);
+        Assert.Equal("LF", button.Content);
+        var editor = Assert.IsType<NeoEditor>(fixture.ViewModel.EditorControl);
+        Assert.Equal("one\ntwo\nthree\nfour", editor.Text);
+        editor.Undo();
+        Assert.Equal("CRLF", button.Content);
+        Assert.False(editor.IsModified);
+
+        Assert.True(editor.Focus());
+        var indicator = fixture.Window.FindControl<TextBlock>("OvertypeIndicator")!;
+        Assert.False(indicator.IsVisible);
+        fixture.Press(Key.Insert, PhysicalKey.Insert);
+        Assert.True(indicator.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public async Task GoToLine_ShortcutAndCommandRespectWordWrap()
+    {
+        using var fixture = new MainWindowFixture();
+        var command = fixture.ViewModel.GoToLineCommand;
+        fixture.ViewModel.Settings.WordWrap = true;
+        Assert.False(command.CanExecute(null));
+        fixture.Press(Key.G, PhysicalKey.G, RawInputModifiers.Control);
+        await command.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Empty(fixture.Window.OwnedWindows);
+
+        fixture.ViewModel.ToggleWordWrapCommand.Execute(null);
+        Assert.True(command.CanExecute(null));
+        fixture.Press(Key.G, PhysicalKey.G, RawInputModifiers.Control);
+        var dialog = Assert.Single(fixture.Window.OwnedWindows.OfType<GoToLineDialog>());
+        dialog.GetVisualDescendants().OfType<Button>().Single(button => button.IsCancel)
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await command.ExecutionTask!.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     private static async Task<Window> WaitForInvalidEncodingPrompt(Window owner)

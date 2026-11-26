@@ -14,13 +14,14 @@ namespace Notepad.NeoEdit;
 
 public sealed partial class NeoEditor : Control
 {
-    private enum EditKind { Independent, Typing, Backspace, Delete }
+    private enum EditKind { Independent, Typing, Overtype, Backspace, Delete }
     private const int MaxUndoEntries = 512;
     private const long MaxUndoCharacters = 4L * 1024 * 1024;
 
     private readonly record struct Selection(int Anchor, int Caret);
     private sealed record EditOp(int Offset, string Removed, string Inserted,
-        Selection Before, Selection After, long BeforeRevision, long AfterRevision, EditKind Kind)
+        Selection Before, Selection After, long BeforeRevision, long AfterRevision, EditKind Kind,
+        string? BeforeNewLine = null, string? AfterNewLine = null)
     {
         public long StoredCharacters => (long)Removed.Length + Inserted.Length;
     }
@@ -53,6 +54,10 @@ public sealed partial class NeoEditor : Control
     public bool IsModified => Revision != _savedRevision;
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
+    public static readonly DirectProperty<NeoEditor, bool> OvertypeModeProperty =
+        AvaloniaProperty.RegisterDirect<NeoEditor, bool>(nameof(OvertypeMode), editor => editor.OvertypeMode);
+    private bool _overtypeMode;
+    public bool OvertypeMode => _overtypeMode;
 
     public int CaretOffset { get => _caretOffset; set => SetSelection(value, 0); }
     public int SelectionAnchor => _anchorOffset;
@@ -219,7 +224,22 @@ public sealed partial class NeoEditor : Control
     public void ReplaceRange(int start, int length, string newText, int? endCaret = null) =>
         ReplaceRange(start, length, newText, EditKind.Independent, endCaret);
 
-    private void ReplaceRange(int start, int length, string text, EditKind kind, int? endCaret = null)
+    internal void ConvertLineEndings(string ending)
+    {
+        string text = GetText();
+        string converted = TextLineEndings.Normalize(text, ending);
+        if (string.Equals(text, converted, StringComparison.Ordinal))
+        {
+            NewLine = ending;
+            return;
+        }
+        var selection = new Selection(TextLineEndings.ConvertOffset(text, _anchorOffset, ending),
+            TextLineEndings.ConvertOffset(text, _caretOffset, ending));
+        ReplaceRange(0, text.Length, converted, EditKind.Independent, selection: selection, newLine: ending);
+    }
+
+    private void ReplaceRange(int start, int length, string text, EditKind kind, int? endCaret = null,
+        Selection? selection = null, string? newLine = null)
     {
         if (start < 0 || start > _doc.Length) throw new ArgumentOutOfRangeException(nameof(start));
         if (length < 0 || length > _doc.Length - start) throw new ArgumentOutOfRangeException(nameof(length));
@@ -237,11 +257,15 @@ public sealed partial class NeoEditor : Control
 
         var before = new Selection(_anchorOffset, _caretOffset);
         long beforeRevision = Revision;
+        string? beforeNewLine = newLine != null ? NewLine : null;
         ApplyChange(start, length, text);
-        _caretOffset = _anchorOffset = SnapOffset(Math.Clamp(endCaret ?? (start + text.Length), 0, _doc.Length), 1);
+        int caret = SnapOffset(Math.Clamp(endCaret ?? (start + text.Length), 0, _doc.Length), 1);
+        var after = selection ?? new Selection(caret, caret);
+        _anchorOffset = after.Anchor;
+        _caretOffset = after.Caret;
+        if (newLine != null) NewLine = newLine;
         Revision = ++_nextRevision;
-        var edit = new EditOp(start, removed, text, before, new(_anchorOffset, _caretOffset),
-            beforeRevision, Revision, kind);
+        var edit = new EditOp(start, removed, text, before, after, beforeRevision, Revision, kind, beforeNewLine, newLine);
         var now = Environment.TickCount64;
         if (_continueGroup && now - _lastGroupEdit <= 1000 && _undo.Last?.Value is { } previous &&
             MergeEdits(previous, edit) is { } merged)
@@ -295,6 +319,8 @@ public sealed partial class NeoEditor : Control
         {
             EditKind.Typing when previous.Offset + previous.Inserted.Length == next.Offset =>
                 merged with { Inserted = previous.Inserted + next.Inserted },
+            EditKind.Overtype when previous.Offset + previous.Inserted.Length == next.Offset =>
+                merged with { Removed = previous.Removed + next.Removed, Inserted = previous.Inserted + next.Inserted },
             EditKind.Backspace when next.Offset + next.Removed.Length == previous.Offset =>
                 merged with { Offset = next.Offset, Removed = next.Removed + previous.Removed },
             EditKind.Delete when previous.Offset == next.Offset =>
@@ -353,22 +379,23 @@ public sealed partial class NeoEditor : Control
         _undo.RemoveLast();
         _undoCharacters -= edit.StoredCharacters;
         _redo.Push(edit);
-        Replay(edit.Offset, edit.Inserted.Length, edit.Removed, edit.Before, edit.BeforeRevision);
+        Replay(edit.Offset, edit.Inserted.Length, edit.Removed, edit.Before, edit.BeforeRevision, edit.BeforeNewLine);
     }
 
     public void Redo()
     {
         if (!_redo.TryPop(out var edit)) return;
         RememberUndo(edit);
-        Replay(edit.Offset, edit.Removed.Length, edit.Inserted, edit.After, edit.AfterRevision);
+        Replay(edit.Offset, edit.Removed.Length, edit.Inserted, edit.After, edit.AfterRevision, edit.AfterNewLine);
     }
 
-    private void Replay(int offset, int length, string text, Selection selection, long revision)
+    private void Replay(int offset, int length, string text, Selection selection, long revision, string? newLine)
     {
         _continueGroup = false;
         ApplyChange(offset, length, text);
         _anchorOffset = selection.Anchor;
         _caretOffset = selection.Caret;
+        if (newLine != null && !WindowsOnlyLineEndings) NewLine = newLine;
         Revision = revision;
         PublishChange();
     }
@@ -377,11 +404,26 @@ public sealed partial class NeoEditor : Control
     {
         base.OnTextInput(e);
         if (e.Handled || string.IsNullOrEmpty(e.Text) || !IsValidUtf16(e.Text)) return;
+        bool composing = _preeditText.Length != 0;
         SetComposition(null);
         string text = TextLineEndings.Normalize(e.Text, NewLine);
-        ReplaceRange(SelectionStart, SelectionLength, text,
-            SelectionLength == 0 && !text.Contains('\r') && !text.Contains('\n')
-                ? EditKind.Typing : EditKind.Independent);
+        int start = SelectionStart;
+        int length = SelectionLength;
+        bool plainTyping = !composing && length == 0 && !text.AsSpan().ContainsAny('\r', '\n');
+        if (plainTyping && OvertypeMode)
+        {
+            int end = start;
+            int line = _doc.GetLineColumnFromOffset(start).Item1;
+            int lineEnd = _doc.GetOffsetFromLineColumn(line, _doc.GetLineContentLength(line));
+            for (int index = 0; index < text.Length && end < lineEnd;)
+            {
+                index += StringInfo.GetNextTextElementLength(text.AsSpan(index));
+                end = TextElementEdge(end, 1, advance: true);
+            }
+            ReplaceRange(start, end - start, text, EditKind.Overtype, endCaret: start + text.Length);
+        }
+        else
+            ReplaceRange(start, length, text, plainTyping ? EditKind.Typing : EditKind.Independent);
         e.Handled = true;
     }
 
@@ -407,6 +449,12 @@ public sealed partial class NeoEditor : Control
             case Key.PageDown when !alt: MoveVertical(PageRows, shift); break;
             case Key.Enter when !ctrl && !alt: InsertAtCaret(NewLine); break;
             case Key.Tab when !ctrl && !alt && !shift: InsertAtCaret("\t"); break;
+            case Key.Insert when !ctrl && !alt && !shift:
+                SetAndRaise(OvertypeModeProperty, ref _overtypeMode, !OvertypeMode);
+                _continueGroup = false;
+                _caretVisible = true;
+                InvalidateVisual();
+                break;
             case Key.Back when alt: Undo(); break;
             case Key.Back: DeleteAdjacent(-1, ctrl); break;
             case Key.Delete when !shift && !alt: DeleteAdjacent(1, ctrl); break;
@@ -504,7 +552,8 @@ public sealed partial class NeoEditor : Control
         {
             if (WindowsOnlyLineEndings || !PreservePastedLineEndings)
                 text = TextLineEndings.Normalize(text, WindowsOnlyLineEndings ? "\r\n" : NewLine);
-            InsertAtCaret(text);
+            int start = SelectionStart;
+            ReplaceRange(start, SelectionLength, text, endCaret: start + text.Length);
         }
     }
 }

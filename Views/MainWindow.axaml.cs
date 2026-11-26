@@ -6,8 +6,10 @@ using Avalonia.Platform.Storage;
 using NotepadAvalonia.ViewModels;
 using System;
 using System.Collections.Specialized;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace NotepadAvalonia.Views;
@@ -44,16 +46,30 @@ public partial class MainWindow : Window
                     Math.Clamp(Position.Y, area.Y, Math.Max(area.Y, area.Bottom - 48)));
             }
             RememberPlacement();
+            if (OperatingSystem.IsWindows() && TryGetPlatformHandle()?.HandleDescriptor == "HWND")
+                UpdateInputDirection(GetKeyboardLayout(0));
             Editor.Focus();
         };
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDrop);
     }
 
-    private nint OnWin32Message(nint window, uint message, nint wParam, nint lParam, ref bool handled) =>
-        message == 0x0288 // WM_IME_REQUEST
-            ? Editor.HandleWindowsImeRequest(wParam, lParam, ref handled)
-            : 0;
+    private nint OnWin32Message(nint window, uint message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (message == 0x0288) // WM_IME_REQUEST
+            return Editor.HandleWindowsImeRequest(wParam, lParam, ref handled);
+        if (message == 0x0051) UpdateInputDirection(lParam); // WM_INPUTLANGCHANGE
+        return 0;
+    }
+
+    private void UpdateInputDirection(nint layout)
+    {
+        try { Editor.PreferRightToLeftForNeutralText = CultureInfo.GetCultureInfo((int)(layout & 0xffff)).TextInfo.IsRightToLeft; }
+        catch (CultureNotFoundException) { Editor.PreferRightToLeftForNeutralText = false; }
+    }
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern nint GetKeyboardLayout(uint threadId);
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
@@ -64,6 +80,7 @@ public partial class MainWindow : Window
             _viewModel.DetachEditor();
         }
         _viewModel = DataContext as MainWindowViewModel;
+        if (Editor.ContextMenu is { } menu) menu.DataContext = _viewModel;
         if (_viewModel != null)
         {
             _viewModel.OwnerWindow = this;

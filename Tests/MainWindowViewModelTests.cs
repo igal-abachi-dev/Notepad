@@ -21,7 +21,7 @@ public class MainWindowViewModelTests
     }
 
     [Fact]
-    public void ToggleWordWrap_DisablesGoToAndPersistsStatusBarIndependently()
+    public void ToggleWordWrap_PersistsStatusBarIndependently()
     {
         var settingsService = CreateSettingsService(out _);
         var vm = new MainWindowViewModel(new FileService(), new SearchService(), settingsService, new PrintService());
@@ -30,7 +30,6 @@ public class MainWindowViewModelTests
 
         Assert.True(vm.Settings.WordWrap);
         Assert.True(vm.Settings.ShowStatusBar);
-        Assert.False(vm.CanUseGoToLine);
 
         var reopened = new MainWindowViewModel(new FileService(), new SearchService(), settingsService, new PrintService());
         Assert.True(reopened.Settings.WordWrap);

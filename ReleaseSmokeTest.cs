@@ -96,6 +96,7 @@ internal static partial class ReleaseSmokeTest
         Require(vm.EditorControl?.IsFocused == true && vm.EditorControl.TextLength == 0, "The blank editor has focus.");
         using var process = Process.GetCurrentProcess();
         double focusedMiB = process.WorkingSet64 / (1024.0 * 1024);
+        double startupMilliseconds = (DateTime.UtcNow - process.StartTime.ToUniversalTime()).TotalMilliseconds;
         vm.SetThemeCommand.Execute(EditorTheme.Dark);
         Require(window.ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark, "Dark theme applied to the window.");
         vm.SetThemeCommand.Execute(EditorTheme.Light);
@@ -114,9 +115,28 @@ internal static partial class ReleaseSmokeTest
 
         var file = Path.Combine(directory, $"smoke-input-{Guid.NewGuid():N}.txt");
         vm.EditorControl!.LoadDocument("first\r\nsecond\r\nthird");
+        var lineEndings = window.FindControl<Button>("LineEndingButton")!;
+        var menu = (MenuFlyout)lineEndings.Flyout!;
+        menu.ShowAt(lineEndings);
+        var convertToLf = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Unix (LF)"));
+        Require(convertToLf.Command != null, "The line-ending flyout did not bind to the editor.");
+        convertToLf.Command!.Execute(convertToLf.CommandParameter);
+        Require(vm.EditorControl.Text == "first\nsecond\nthird" && Equals(lineEndings.Content, "LF"),
+            "The line-ending menu did not convert the document.");
+        menu.Hide();
+        vm.EditorControl.Undo();
+        Require(Equals(lineEndings.Content, "CRLF") && !vm.EditorControl.IsModified,
+            "Undo did not restore the line-ending mode and clean state.");
         var peer = ControlAutomationPeer.CreatePeerForElement(vm.EditorControl);
         Require(peer?.GetProvider<IValueProvider>()?.Value == "first\r\nsecond\r\nthird",
             "The published editor exposes the document through its automation peer.");
+        if (!vm.Settings.WordWrap) vm.ToggleWordWrapCommand.Execute(null);
+        Require(!vm.CanUseGoToLine && !vm.GoToLineCommand.CanExecute(null), "Word Wrap disables Go To Line.");
+        await vm.GoToLineCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+        Require(window.OwnedWindows.OfType<GoToLineDialog>().All(dialog => !dialog.IsVisible),
+            "Go To Line stays closed with Word Wrap enabled.");
+        vm.ToggleWordWrapCommand.Execute(null);
+        Require(vm.GoToLineCommand.CanExecute(null), "Go To Line is available with Word Wrap disabled.");
         var goTo = vm.GoToLineCommand.ExecuteAsync(null);
         var goToDialog = await WaitForDialog<GoToLineDialog>(window);
         var range = goToDialog.FindControl<TextBlock>("InfoText");
@@ -136,8 +156,8 @@ internal static partial class ReleaseSmokeTest
             label.Text?.StartsWith("Cannot open ", StringComparison.Ordinal) == true), "File error dialog displays its message.");
         Accept(message);
         Require(!await missing.WaitAsync(TimeSpan.FromSeconds(5)), "File error did not replace the open document.");
-        return "Native AOT smoke passed: blank startup, themes, Encoding, Go To Line, file error dialog, automation value." +
-            Environment.NewLine + $"First focused blank window: {focusedMiB:F1} MiB working set.";
+        return "Native AOT smoke passed: blank startup, themes, Encoding, line-ending conversion, classic Go To Line availability, file error dialog, automation value." +
+            Environment.NewLine + $"First focused blank window: {startupMilliseconds:F0} ms after process start, {focusedMiB:F1} MiB working set.";
     }
 
     private static async Task<T> WaitForDialog<T>(Window owner) where T : Window

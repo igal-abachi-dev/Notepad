@@ -62,6 +62,7 @@ public class EditorSettings : ObservableObject
     }
 
     public double FontSize { get; set; } = 11;
+    public bool ShowUnicodeControls { get; set; }
     public bool IsBold { get; set; }
     public bool IsItalic { get; set; }
     public int WindowX { get; set; } = 100;

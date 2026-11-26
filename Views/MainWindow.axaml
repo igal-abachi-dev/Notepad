@@ -78,7 +78,7 @@
         <MenuItem Header="Find _Next" Command="{Binding FindNextCommand}" InputGesture="F3" />
         <MenuItem Header="Find Pre_vious" Command="{Binding FindPreviousCommand}" InputGesture="Shift+F3" />
         <MenuItem Header="Re_place..." Command="{Binding ShowReplaceDialogCommand}" InputGesture="Ctrl+H" />
-        <MenuItem Header="_Go To..." Command="{Binding GoToLineCommand}" IsEnabled="{Binding CanUseGoToLine}" InputGesture="Ctrl+G" />
+        <MenuItem Header="_Go To..." Command="{Binding GoToLineCommand}" InputGesture="Ctrl+G" />
         <Separator />
         <MenuItem Header="Select _All" Command="{Binding SelectAllCommand}" InputGesture="Ctrl+A" />
         <MenuItem Header="Time/_Date" Command="{Binding InsertDateTimeCommand}" InputGesture="F5" />
@@ -129,11 +129,23 @@
                Text="{Binding SettingsWarning}" Padding="8,4" AutomationProperties.LiveSetting="Polite" />
     <Grid DockPanel.Dock="Bottom" IsVisible="{Binding Settings.ShowStatusBar}"
           Height="24" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
-          ColumnDefinitions="*,Auto,Auto,Auto">
+          ColumnDefinitions="*,Auto,Auto,Auto,Auto">
       <TextBlock Text="{Binding StatusText}" Margin="8,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
       <TextBlock Grid.Column="1" Text="{Binding Settings.ZoomLevel, StringFormat={}{0}%}" VerticalAlignment="Center" Margin="8,0" />
       <TextBlock Grid.Column="2" Text="{Binding EncodingText}" VerticalAlignment="Center" Margin="8,0" />
-      <TextBlock Grid.Column="3" Text="{Binding LineEndingText}" VerticalAlignment="Center" Margin="8,0" />
+      <Button x:Name="LineEndingButton" Grid.Column="3" Content="{Binding LineEndingText}" VerticalAlignment="Stretch" Padding="8,0"
+              Background="Transparent" BorderThickness="0" ToolTip.Tip="Convert line endings"
+              AutomationProperties.Name="Convert line endings">
+        <Button.Flyout>
+          <MenuFlyout>
+            <MenuItem Header="Windows (CRLF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CRLF}" />
+            <MenuItem Header="Unix (LF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.LF}" />
+            <MenuItem Header="Macintosh (CR)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CR}" />
+          </MenuFlyout>
+        </Button.Flyout>
+      </Button>
+      <TextBlock x:Name="OvertypeIndicator" Grid.Column="4" Text="OVR" IsVisible="{Binding #Editor.OvertypeMode}" VerticalAlignment="Center" Margin="8,0"
+                 AutomationProperties.Name="Overtype mode" />
     </Grid>
 
     <ScrollViewer Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
@@ -147,6 +159,7 @@
                      WordWrap="{Binding Settings.WordWrap}"
                      ShowLineNumbers="{Binding Settings.ShowLineNumbers}"
                      RightToLeftReadingOrder="{Binding Settings.RightToLeft}"
+                     ShowUnicodeControls="{Binding Settings.ShowUnicodeControls}"
                      Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}">
         <neo:NeoEditor.ContextMenu>
@@ -160,6 +173,20 @@
             <MenuItem Header="De_lete" Command="{Binding DeleteCommand}" />
             <Separator />
             <MenuItem Header="Select _All" Command="{Binding SelectAllCommand}" />
+            <Separator />
+            <MenuItem Header="_Right-to-left reading order" Command="{Binding ToggleRightToLeftCommand}"
+                      ToggleType="CheckBox" IsChecked="{Binding Settings.RightToLeft, Mode=OneWay}" />
+            <MenuItem Header="_Show Unicode control characters" Command="{Binding ToggleUnicodeControlsCommand}"
+                      ToggleType="CheckBox" IsChecked="{Binding Settings.ShowUnicodeControls, Mode=OneWay}" />
+            <MenuItem Header="_Insert Unicode control character">
+              <MenuItem Header="LRM · Left-to-right mark" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x200E;" />
+              <MenuItem Header="RLM · Right-to-left mark" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x200F;" />
+              <MenuItem Header="ZWJ · Zero-width joiner" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x200D;" />
+              <MenuItem Header="ZWNJ · Zero-width non-joiner" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x200C;" />
+              <MenuItem Header="LRI · Left-to-right isolate" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x2066;" />
+              <MenuItem Header="RLI · Right-to-left isolate" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x2067;" />
+              <MenuItem Header="PDI · Pop directional isolate" Command="{Binding InsertUnicodeControlCommand}" CommandParameter="&#x2069;" />
+            </MenuItem>
           </ContextMenu>
         </neo:NeoEditor.ContextMenu>
       </neo:NeoEditor>

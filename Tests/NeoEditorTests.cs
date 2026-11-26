@@ -17,6 +17,75 @@ namespace Notepad.Tests;
 public class NeoEditorTests
 {
     [AvaloniaFact]
+    public void Overtype_ReplacesGraphemesWithoutEatingTheNewline_AndUndoRestoresThem()
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument("a\u0301\U0001f600\r\nnext");
+            Press(window, Key.Insert, PhysicalKey.Insert);
+            Assert.True(editor.OvertypeMode);
+            window.KeyTextInput("A");
+            window.KeyTextInput("B");
+            window.KeyTextInput("C");
+            Assert.Equal("ABC\r\nnext", editor.Text);
+            editor.Undo();
+            Assert.Equal("a\u0301\U0001f600\r\nnext", editor.Text);
+            editor.Redo();
+            Assert.Equal("ABC\r\nnext", editor.Text);
+            Press(window, Key.Insert, PhysicalKey.Insert);
+            Assert.False(editor.OvertypeMode);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void ConvertLineEndings_MapsReverseSelectionAndRestoresItOnUndo()
+    {
+        var editor = new NeoEditor { Text = "a\r\nb\nc\rd" };
+        editor.SetSelection(7, -4);
+        editor.ConvertLineEndings("\n");
+        Assert.Equal("a\nb\nc\nd", editor.Text);
+        Assert.Equal((6, 2, "b\nc\n"), (editor.SelectionAnchor, editor.CaretOffset, editor.GetSelectedText()));
+        Assert.Equal("\n", editor.NewLine);
+        editor.Undo();
+        Assert.Equal("a\r\nb\nc\rd", editor.Text);
+        Assert.Equal((7, 3, "\r\n"), (editor.SelectionAnchor, editor.CaretOffset, editor.NewLine));
+        Assert.False(editor.IsModified);
+        editor.Redo();
+        Assert.Equal("\n", editor.NewLine);
+    }
+
+    [AvaloniaFact]
+    public void ControlBackspace_SeparatesPunctuationFromWords()
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument("foo.bar.baz()");
+            editor.CaretOffset = editor.TextLength;
+            window.KeyPress(Key.Back, RawInputModifiers.Control, PhysicalKey.Backspace, null);
+            Assert.Equal("foo.bar.baz", editor.Text);
+            window.KeyPress(Key.Back, RawInputModifiers.Control, PhysicalKey.Backspace, null);
+            Assert.Equal("foo.bar.", editor.Text);
+            window.KeyPress(Key.Back, RawInputModifiers.Control, PhysicalKey.Backspace, null);
+            Assert.Equal("foo.bar", editor.Text);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void LinkDetection_OnlyReturnsWebUrlsAndExcludesWrappingPunctuation()
+    {
+        var editor = new NeoEditor { Text = "see (https://example.com/a_(b)).\r\nfile:///C:/test" };
+        Assert.Equal("https://example.com/a_(b)", editor.GetWebLinkAt(17)?.AbsoluteUri);
+        Assert.Null(editor.GetWebLinkAt(1));
+        Assert.Null(editor.GetWebLinkAt(editor.TextLength));
+    }
+
+    [AvaloniaFact]
     public void Backspace_AfterAnEditJoinsCrLf_RemovesTheEntireSeparator()
     {
         var editor = new NeoEditor();

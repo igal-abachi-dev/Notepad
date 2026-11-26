@@ -11,6 +11,36 @@ namespace Notepad.Tests;
 public class FileServiceTests
 {
     [Fact]
+    public async Task Open_WindowsStyleSlashesAndASpaceInTheName_ReadTheExistingFile()
+    {
+        using var file = new TemporaryFile();
+        string path = Path.Combine(Path.GetDirectoryName(file.Path)!, "Script é.ps1");
+        await File.WriteAllTextAsync(path, "Write-Output 1");
+        var opened = await new FileService().ReadDocumentAsync(path.Replace('\\', '/'));
+        Assert.Equal("Write-Output 1", opened.Content);
+    }
+
+    [Fact]
+    public void DetectEncoding_AsciiAndInvalidUtf8_DoNotUseLegacyStatisticalGuesses()
+    {
+        var service = new FileService();
+        Assert.Equal(FileEncodingType.UTF8, service.DetectEncodingType("Bush hid the facts"u8.ToArray()));
+        Assert.Equal(FileEncodingType.UTF8, service.DetectEncodingType([65, 0]));
+        Assert.Equal(FileEncodingType.ANSI, service.DetectEncodingType([0xE9, 0x20, 0x61, 0x61]));
+        Assert.Equal(FileEncodingType.ANSI, service.DetectEncodingType([65, 0, 66, 0, 67, 0, 0, 0xD8]));
+    }
+
+    [Fact]
+    public async Task BomlessUtf16WithoutByteAlignmentClues_CanBeOpenedExplicitly()
+    {
+        using var file = new TemporaryFile();
+        await File.WriteAllBytesAsync(file.Path, Convert.FromHexString("4F60597D"));
+        var service = new FileService();
+        Assert.Equal("O`Y}", (await service.ReadDocumentAsync(file.Path)).Content);
+        Assert.Equal("\u4F60\u597D", (await service.ReadDocumentAsync(file.Path, FileEncodingType.UTF16BE)).Content);
+    }
+
+    [Fact]
     public void DetectEncoding_ReturnsUtf8WithBom()
     {
         var service = new FileService();
