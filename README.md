@@ -2,11 +2,13 @@
 Notepad (classic) written in C# + Avalonia UI + Native AOT 
 
 
-in windows 11 , notepad changed from being light single exe (c++ win32 based on windows messages and gdi and com dialogs),
-into c++ winrt(uwp/winui xaml) with richtext markdown , tabs , restart manager , cowriter ai.... and more bloat
-but they removed the simplicity it had , and made it slower load and heavy
+in windows 11 , notepad changed from being light single exe (c++ win32 based on windows messages and gdi and comdl32 dialogs and comctl32 edit control with edit buffer: Single contiguous HLOCAL + memmove with single-level undo , and kernel32.dll FindNLSStringEx for search and replace),
 
-so this is remaking the classic notepad on modern stack so its notepad xaml ui , more maintainable,
+into c++ winrt(uwp/winui xaml) with Microsoft 365 (Office) build of RichEdit , richtext markdown , tabs , restart manager , cowriter ai.... and more bloat
+but they removed the simplicity it had , and made it slower load and heavy
+but it did used: RichEditD2DPT (RichEdit Direct2D Plain Text). Using Direct2D and DirectWrite instead of legacy GDI allows hardware-accelerated scrolling, crisp typography, color emoji rendering
+
+so this is remaking the classic notepad on modern stack so its notepad xaml ui , more maintainable, and improved,
 it is based on reversing original notepad c code from win10 exe , and porting it to c# and modernizing it
 
 text engine is based of piece Red-Black Tree of stringbuilder text buffer like vs code / vs 2026 editor
@@ -17,6 +19,14 @@ and uses textLayout for rendering text
 
 
 NeoEdit brings the classic Windows 10 Notepad workflow to C# and Avalonia. It opens to a blank document ready for typing, keeps one document per window, and focuses on local plain-text editing. The Windows x64 release is published as self-contained Native AOT.
+
+
+Why Classic Notepad Hit Those Limits:
+Because it relied directly on comctl32's "Edit" control, all of classic Notepad's well-known quirks came straight from that control's internal buffer design:
+• The memmove bottleneck: Typing or deleting a character near the top of a 50 MB file forced comctl32 to LocalReAlloc and memmove tens of megabytes of UTF-16 characters in a single contiguous HLOCAL block on the UI thread, freezing the window.
+• Single-level undo: The classic "Edit" control only stores one previous state buffer (EM_UNDO literally swaps the current text and the single saved undo buffer, so pressing Ctrl+Z twice just redoes what you undid).
+• Direct buffer access for Find/Replace: Instead of sending WM_GETTEXT (which would allocate a second giant copy of the file), classic Notepad sent EM_GETHANDLE, called LocalLock to get a raw WCHAR* pointer directly into the Edit control's internal memory, and ran FindNLSStringEx straight across it. 
+
 
 <img width="3834" height="2048" alt="Notepad window" src="https://github.com/user-attachments/assets/e81298dd-0945-40ee-9a99-a20679ab1a4f" />
 
