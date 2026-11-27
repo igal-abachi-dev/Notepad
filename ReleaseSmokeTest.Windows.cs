@@ -1,6 +1,9 @@
 using Avalonia.Controls;
+using Avalonia.Automation;
 using Avalonia.Input;
 using Avalonia.Input.TextInput;
+using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.Views;
@@ -23,11 +26,47 @@ internal static partial class ReleaseSmokeTest
     {
         nint hwnd = window.TryGetPlatformHandle()!.Handle;
         WindowsRecentDocuments.VerifyLink(Path.Combine(directory, "Jump List document.txt"));
+        string linkedCheck = await VerifyLinkedSaveAsync(window, directory);
         string printCheck = await VerifyPdfSpoolAsync(directory);
         VerifyImeRequests(window, hwnd);
         VerifySessionEnd(window);
         return "Windows smoke passed: Jump List link construction, IME geometry and reconversion requests, " +
-            "cancelled sign-out and confirmed sign-out with draft recovery." + Environment.NewLine + printCheck;
+            "cancelled sign-out and confirmed sign-out with draft recovery." + Environment.NewLine +
+            linkedCheck + Environment.NewLine + printCheck;
+    }
+
+    private static async Task<string> VerifyLinkedSaveAsync(MainWindow window, string directory)
+    {
+        string folder = Path.Combine(directory, $"linked-save-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, "original.txt");
+        string alias = Path.Combine(folder, "alias.txt");
+        await File.WriteAllTextAsync(path, "before");
+        if (!CreateHardLinkW(alias, path, 0))
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error is 1 or 50) return "Hard-link save skipped because the verification volume does not support hard links.";
+            throw new IOException($"The verification hard link could not be created ({error}).");
+        }
+        var vm = window.ViewModel;
+        Require(await vm.LoadFileAsync(path), "The hard-linked test file opened.");
+        vm.EditorControl!.ReplaceRange(0, 6, "after");
+        var save = vm.SaveFileCommand.ExecuteAsync(null);
+        var dialog = await WaitForDialog<Window>(window);
+        Require(dialog.Title == "Save hard-linked file", "The hard-linked file opened its save prompt.");
+        var buttons = dialog.GetVisualDescendants().OfType<Button>().ToArray();
+        Require(buttons.Length == 3 && buttons.Single(button => button.IsDefault).IsCancel,
+            "The hard-link dialog offers three choices with Cancel as the default.");
+        Require(await File.ReadAllTextAsync(path) == "before" && await File.ReadAllTextAsync(alias) == "before",
+            "While the prompt is open both hard-link names retain the original data.");
+        buttons.Single(button => AutomationProperties.GetAutomationId(button) == "MessageDialogUpdateAllLinks")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await save.WaitAsync(TimeSpan.FromSeconds(5));
+        Require(await File.ReadAllTextAsync(path) == "after" && await File.ReadAllTextAsync(alias) == "after" &&
+            !vm.Document.IsModified && !Directory.EnumerateFiles(folder, ".notepad-recovery-*.bak").Any(),
+            "Successful in-place save updates both names, marks the document saved, and removes its recovery copy.");
+        await vm.NewFileCommand.ExecuteAsync(null);
+        return "The hard-link save dialog updated both links and removed the recovery copy after success.";
     }
 
     [SupportedOSPlatform("windows")]
@@ -135,4 +174,7 @@ internal static partial class ReleaseSmokeTest
 
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern nint SendMessageW(nint window, uint message, nint wParam, nint lParam);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateHardLinkW(string link, string existing, nint security);
 }

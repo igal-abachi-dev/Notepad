@@ -4,6 +4,7 @@ using NotepadAvalonia.Models;
 using System.Text;
 using System.Threading.Tasks;
 using System;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Text.Unicode;
@@ -14,7 +15,7 @@ namespace NotepadAvalonia.Services;
 /// Maps to: function_14000ffe4 (load), function_14000f36c (save)
 /// Encoding detection: function_140007f5c
 /// </summary>
-public class FileService 
+public partial class FileService
 {
     private const int MaximumInputSize = 1024 * 1024 * 1024;
 
@@ -68,12 +69,18 @@ public class FileService
     public async Task SaveFileAsync(string path, string content, FileEncodingType encodingType, LineEndingStyle lineEnding) =>
         await CommitFileAsync(path, content, encodingType, lineEnding);
 
-    public virtual async Task<FileVersion> CommitFileAsync(string path, string content, FileEncodingType encodingType,
-        LineEndingStyle lineEnding, FileVersion? expected = null)
-    {
-        // Preserve existing line endings (do not normalize) to mirror classic Notepad behavior.
-        _ = lineEnding;
+    public virtual Task<FileVersion> CommitFileAsync(string path, string content, FileEncodingType encodingType,
+        LineEndingStyle lineEnding, FileVersion? expected = null) =>
+        StageAndCommitFileAsync(path, content, encodingType, expected, hardLink: null);
 
+    internal Task<FileVersion> CommitHardLinkedFileAsync(string path, string content, FileEncodingType encodingType,
+        FileVersion? expected, HardLinkSaveTarget hardLink) =>
+        StageAndCommitFileAsync(path, content, encodingType, expected, hardLink);
+
+    private async Task<FileVersion> StageAndCommitFileAsync(string path, string content, FileEncodingType encodingType,
+        FileVersion? expected, HardLinkSaveTarget? hardLink)
+    {
+        // Preserve the separators already present in the editor buffer.
         var encoding = GetEncoding(encodingType);
 
         string destination = Path.GetFullPath(path);
@@ -97,13 +104,18 @@ public class FileService
                 written = await ReadVersionAsync(stream);
             }
 
-            await Task.Run(() => CommitStagedFile(tempPath, destination, expected));
-            created = false;
+            await Task.Run(() =>
+            {
+                if (hardLink is { } approved)
+                    CommitHardLinkedFile(tempPath, destination, expected, approved);
+                else
+                    CommitStagedFile(tempPath, destination, expected);
+            });
             return written;
         }
         finally
         {
-            if (created) File.Delete(tempPath);
+            if (created) DeleteSaveArtifact(tempPath);
         }
     }
 
@@ -123,11 +135,12 @@ public class FileService
         try
         {
             using var original = expected == null ? null : OpenForVersionCheck(destination);
-            if (original != null && (original.Length != expected!.Length ||
-                !StringComparer.Ordinal.Equals(Convert.ToHexString(SHA256.HashData(original)), expected.Sha256)))
-                throw new FileChangedException();
+            if (original != null) VerifyVersion(original, expected!);
+            bool exists = OperatingSystem.IsWindows()
+                ? CheckHardLinks(destination, original, expected)
+                : original != null || File.Exists(destination);
 
-            if (original != null || File.Exists(destination))
+            if (exists)
             {
                 if (!OperatingSystem.IsWindows())
                     File.SetUnixFileMode(staging, File.GetUnixFileMode(destination));
@@ -139,6 +152,27 @@ public class FileService
         finally
         {
             mutex.ReleaseMutex();
+        }
+    }
+
+    private static FileVersion ReadVersion(FileStream stream)
+    {
+        stream.Position = 0;
+        return new(stream.Length, Convert.ToHexString(SHA256.HashData(stream)));
+    }
+
+    private static void VerifyVersion(FileStream stream, FileVersion expected)
+    {
+        if (stream.Length != expected.Length || ReadVersion(stream) != expected)
+            throw new FileChangedException();
+    }
+
+    private static void DeleteSaveArtifact(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Trace.TraceWarning("Could not remove a Notepad save artifact: {0}", ex.GetType().Name);
         }
     }
 

@@ -15,7 +15,7 @@ internal static class SaveChangesDialog
             [("_Save", DialogChoice.Yes), ("Do_n't Save", DialogChoice.No), ("Cancel", DialogChoice.Cancel)]);
 }
 
-internal enum DialogChoice { None, Ok, Yes, No, Cancel }
+internal enum DialogChoice { None, Ok, Yes, No, Cancel, UpdateAllLinks, SaveAs }
 internal enum MessageButtons { Ok, YesNo, YesNoCancel }
 
 internal static class MessageDialog
@@ -29,7 +29,7 @@ internal static class MessageDialog
         });
 
     public static Task<DialogChoice> ShowAsync(Window owner, string title, string message,
-        IReadOnlyList<(string Label, DialogChoice Choice)> actions)
+        IReadOnlyList<(string Label, DialogChoice Choice)> actions, DialogChoice? defaultChoice = null)
     {
         var dialog = new Window
         {
@@ -42,7 +42,7 @@ internal static class MessageDialog
             var (label, result) = actions[i];
             var button = new Button
             {
-                Content = label, MinWidth = 86, IsDefault = i == 0,
+                Content = label, MinWidth = 86, IsDefault = defaultChoice.HasValue ? result == defaultChoice : i == 0,
                 IsCancel = result == DialogChoice.Cancel || actions.Count == 1
             };
             AutomationProperties.SetAutomationId(button, $"MessageDialog{result}");

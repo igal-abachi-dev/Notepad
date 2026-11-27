@@ -1,4 +1,5 @@
 ﻿using Avalonia.Controls;
+using Avalonia.Automation;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -331,6 +332,49 @@ public class DialogWorkflowTests
 
     private static Button DefaultButton(Window window) =>
         window.GetVisualDescendants().OfType<Button>().Single(button => button.IsDefault);
+
+    [AvaloniaTheory]
+    [InlineData("UpdateAllLinks")]
+    [InlineData("SaveAs")]
+    [InlineData("Cancel")]
+    public async Task HardLinkedSave_OffersExplicitChoices(string choice)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var fixture = new MainWindowFixture();
+        string path = Path.Combine(fixture.Folder, "linked.txt");
+        string alias = Path.Combine(fixture.Folder, "alias.txt");
+        await File.WriteAllTextAsync(path, "original");
+        FileServiceTests.CreateHardLink(alias, path);
+        Assert.True(await fixture.ViewModel.LoadFileAsync(path));
+        fixture.ViewModel.EditorControl!.ReplaceRange(0, "original".Length, "updated");
+
+        var save = fixture.ViewModel.SaveFileCommand.ExecuteAsync(null);
+        await UntilAsync(() => fixture.Window.OwnedWindows.Any(window => window.Title == "Save hard-linked file"));
+        var prompt = fixture.Window.OwnedWindows.Single(window => window.Title == "Save hard-linked file");
+        Assert.True(DefaultButton(prompt).IsCancel);
+        var button = prompt.GetVisualDescendants().OfType<Button>()
+            .Single(item => AutomationProperties.GetAutomationId(item) == $"MessageDialog{choice}");
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+        if (choice == "SaveAs")
+        {
+            await UntilAsync(() => fixture.Window.OwnedWindows.OfType<FilePickerDialog>().Any());
+            var picker = fixture.Window.OwnedWindows.OfType<FilePickerDialog>().Single();
+            await UntilAsync(() => picker.FindControl<TextBox>("FolderBox")!.Text == fixture.Folder &&
+                picker.FindControl<Button>("AcceptButton")!.IsEnabled);
+            picker.FindControl<TextBox>("FileNameBox")!.Text = "separate.txt";
+            DefaultButton(picker).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        await save.WaitAsync(TimeSpan.FromSeconds(5));
+
+        string expected = choice == "UpdateAllLinks" ? "updated" : "original";
+        Assert.Equal(expected, await File.ReadAllTextAsync(path));
+        Assert.Equal(expected, await File.ReadAllTextAsync(alias));
+        Assert.Equal(choice == "Cancel", fixture.ViewModel.Document.IsModified);
+        if (choice == "SaveAs")
+            Assert.Equal("updated", await File.ReadAllTextAsync(Path.Combine(fixture.Folder, "separate.txt")));
+        Assert.Empty(Directory.GetFiles(fixture.Folder, ".notepad-recovery-*.bak"));
+    }
 
     private sealed class MainWindowFixture : IDisposable
     {

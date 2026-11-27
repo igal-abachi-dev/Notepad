@@ -22,10 +22,11 @@ public partial class MainWindowViewModel
     private long _loadRequest;
     private bool _saveDecisionPending;
     private bool _savePickerPending;
+    private bool _hardLinkPromptPending;
     private int _pendingWrites;
     private TaskCompletionSource? _saveIdle;
     private string? _pendingLogAppend;
-    internal bool HasPendingSave => _saveIdle != null || _savePickerPending;
+    internal bool HasPendingSave => _saveIdle != null || _savePickerPending || _hardLinkPromptPending;
 
     [RelayCommand]
     private async Task NewFileAsync()
@@ -189,7 +190,10 @@ public partial class MainWindowViewModel
         $"{moment.ToString("t", CultureInfo.CurrentCulture)} {moment.ToString("d", CultureInfo.CurrentCulture)}";
 
     [RelayCommand(AllowConcurrentExecutions = true)]
-    private async Task SaveFileAsync() => await SaveCurrentDocumentAsync();
+    private async Task SaveFileAsync()
+    {
+        if (!_hardLinkPromptPending && !_savePickerPending) await SaveCurrentDocumentAsync();
+    }
 
     private Task<bool> SaveCurrentDocumentAsync() =>
         Document.IsUntitled
@@ -201,11 +205,9 @@ public partial class MainWindowViewModel
 
     private async Task<bool> PickSaveDestinationAsync(DocumentModel original)
     {
-        if (_savePickerPending) return false;
-        _savePickerPending = true;
         try
         {
-            var file = await PickFileAsync(original, original.SaveEncodingType);
+            var file = await PickSaveChoiceAsync(original, original.SaveEncodingType);
             return file is { Encoding: { } encoding } && Document == original &&
                 await SaveWithRetryAsync(original, file.Path, encoding);
         }
@@ -214,10 +216,14 @@ public partial class MainWindowViewModel
             await ShowErrorAsync($"Cannot save file. {ex.Message}");
             return false;
         }
-        finally
-        {
-            _savePickerPending = false;
-        }
+    }
+
+    private async Task<FilePickerDialog.Choice?> PickSaveChoiceAsync(DocumentModel original, FileEncodingType encoding)
+    {
+        if (_hardLinkPromptPending || _savePickerPending) return null;
+        _savePickerPending = true;
+        try { return await PickFileAsync(original, encoding); }
+        finally { _savePickerPending = false; }
     }
 
     private Task<FilePickerDialog.Choice?> PickFileAsync(DocumentModel document, FileEncodingType? saveEncoding) =>
@@ -226,24 +232,37 @@ public partial class MainWindowViewModel
 
     private async Task<bool> SaveWithRetryAsync(DocumentModel original, string path, FileEncodingType encoding)
     {
+        HardLinkSaveTarget? approvedLink = null;
         try
         {
-            return await SaveRevisionAsync(original, path, encoding);
-        }
-        catch (EncoderFallbackException) when (encoding == FileEncodingType.ANSI && Document == original)
-        {
-            var answer = await ShowMessageAsync("Save encoding",
-                "Some characters cannot be saved in ANSI. Save this file as UTF-8?", MessageButtons.YesNo);
-            if (answer != DialogChoice.Yes || Document != original) return false;
-            try
+            while (Document == original)
             {
-                return await SaveRevisionAsync(original, path, FileEncodingType.UTF8);
+                try { return await SaveRevisionAsync(original, path, encoding, approvedLink); }
+                catch (HardLinkSaveRequiredException ex) when (approvedLink == null)
+                {
+                    if (Document != original) return false;
+                    var answer = await AskAboutHardLinksAsync(path);
+                    if (Document != original) return false;
+                    if (answer == DialogChoice.UpdateAllLinks)
+                    {
+                        approvedLink = ex.Target;
+                        continue;
+                    }
+                    if (answer != DialogChoice.SaveAs) return false;
+                    var file = await PickSaveChoiceAsync(original, encoding);
+                    if (file is not { Encoding: { } pickedEncoding }) return false;
+                    path = file.Path;
+                    encoding = pickedEncoding;
+                }
+                catch (EncoderFallbackException) when (encoding == FileEncodingType.ANSI && Document == original)
+                {
+                    var answer = await ShowMessageAsync("Save encoding",
+                        "Some characters cannot be saved in ANSI. Save this file as UTF-8?", MessageButtons.YesNo);
+                    if (answer != DialogChoice.Yes) return false;
+                    encoding = FileEncodingType.UTF8;
+                }
             }
-            catch (Exception ex) when (IsFileError(ex))
-            {
-                await ShowErrorAsync($"Cannot save file. {ex.Message}");
-                return false;
-            }
+            return false;
         }
         catch (Exception ex) when (IsFileError(ex))
         {
@@ -252,7 +271,23 @@ public partial class MainWindowViewModel
         }
     }
 
-    private async Task<bool> SaveRevisionAsync(DocumentModel original, string path, FileEncodingType encoding)
+    private async Task<DialogChoice> AskAboutHardLinksAsync(string path)
+    {
+        if (_hardLinkPromptPending || OwnerWindow is not { IsVisible: true } owner) return DialogChoice.Cancel;
+        _hardLinkPromptPending = true;
+        try
+        {
+            return await MessageDialog.ShowAsync(owner, "Save hard-linked file",
+                $"{Path.GetFileName(path)} has multiple hard links. Update All Links saves the changes to each name " +
+                "and keeps a recovery copy beside the file until the write succeeds.",
+                [("Update _All Links", DialogChoice.UpdateAllLinks), ("Save _As…", DialogChoice.SaveAs), ("Cancel", DialogChoice.Cancel)],
+                defaultChoice: DialogChoice.Cancel);
+        }
+        finally { _hardLinkPromptPending = false; }
+    }
+
+    private async Task<bool> SaveRevisionAsync(DocumentModel original, string path, FileEncodingType encoding,
+        HardLinkSaveTarget? approvedLink)
     {
         if (Document != original || EditorControl is not { } editor) return false;
         long revision = editor.CaptureSaveRevision();
@@ -267,7 +302,9 @@ public partial class MainWindowViewModel
         {
             var expected = !original.IsUntitled && SettingsService.PathComparer.Equals(original.FilePath, path)
                 ? original.SavedFileVersion : null;
-            var fileVersion = await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
+            var fileVersion = approvedLink is { } approved
+                ? await _fileService.CommitHardLinkedFileAsync(path, content, encoding, expected, approved)
+                : await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
             if (Document != original || EditorControl != editor) return true;
             editor.MarkSaved(revision);
             original.FilePath = path;
@@ -304,7 +341,7 @@ public partial class MainWindowViewModel
 
     public async Task<bool> CheckSaveChangesAsync(bool discardDraft = false)
     {
-        if (_saveDecisionPending || _savePickerPending) return false;
+        if (_saveDecisionPending || _savePickerPending || _hardLinkPromptPending) return false;
         _saveDecisionPending = true;
         var original = Document;
         try

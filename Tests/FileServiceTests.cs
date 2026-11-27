@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using NotepadAvalonia.Models;
@@ -228,6 +229,96 @@ public class FileServiceTests
                 return replacement;
             }
             catch (FileChangedException) { return null; }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HardLinkedSave_RequiresApprovalAndUpdatesBothNames(bool saveAs)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var file = new TemporaryFile();
+        var service = new FileService();
+        await File.WriteAllTextAsync(file.Path, "original text");
+        string alias = file.Path + ".link";
+        CreateHardLink(alias, file.Path);
+        var original = await service.ReadDocumentAsync(file.Path);
+        var expected = saveAs ? null : original.Version;
+
+        var pending = await Assert.ThrowsAsync<HardLinkSaveRequiredException>(() =>
+            service.CommitFileAsync(file.Path, "new", FileEncodingType.UTF8, LineEndingStyle.CRLF, expected));
+        Assert.Equal("original text", await File.ReadAllTextAsync(file.Path));
+        Assert.Equal("original text", await File.ReadAllTextAsync(alias));
+
+        var saved = await service.CommitHardLinkedFileAsync(file.Path, "new", FileEncodingType.UTF8, expected, pending.Target);
+        Assert.Equal("new", await File.ReadAllTextAsync(file.Path));
+        Assert.Equal("new", await File.ReadAllTextAsync(alias));
+        Assert.Equal(saved, (await service.ReadDocumentAsync(alias)).Version);
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-*"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HardLinkedSave_RejectsAChangedVersionOrAnIdenticalReplacementFile(bool replaceFile)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var file = new TemporaryFile();
+        var service = new FileService();
+        await File.WriteAllTextAsync(file.Path, "original");
+        string alias = file.Path + ".link";
+        CreateHardLink(alias, file.Path);
+        var pending = await Assert.ThrowsAsync<HardLinkSaveRequiredException>(() =>
+            service.CommitFileAsync(file.Path, "new", FileEncodingType.UTF8, LineEndingStyle.CRLF));
+
+        string current = "external changes";
+        if (replaceFile)
+        {
+            // The replacement has the same contents and its own hard links.
+            File.Delete(file.Path);
+            current = "original";
+            await File.WriteAllTextAsync(file.Path, current);
+            CreateHardLink(file.Path + ".other", file.Path);
+        }
+        else await File.WriteAllTextAsync(alias, current);
+
+        await Assert.ThrowsAsync<FileChangedException>(() =>
+            service.CommitHardLinkedFileAsync(file.Path, "new", FileEncodingType.UTF8, null, pending.Target));
+        Assert.Equal(current, await File.ReadAllTextAsync(file.Path));
+        Assert.Equal(current, await File.ReadAllTextAsync(alias));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-*"));
+    }
+
+    [Fact]
+    public void InPlaceWriteFailure_RetainsRecoveryCopyWithTheExactOriginalBytes()
+    {
+        using var file = new TemporaryFile();
+        byte[] original = [0xFF, 0xFE, 0x41, 0x00, 0x0D, 0x00];
+        File.WriteAllBytes(file.Path, original);
+        using (var target = File.Open(file.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        using (var failing = new FailingCopy())
+        {
+            var error = Assert.Throws<IOException>(() => FileService.WriteWithRecoveryCopy(target, failing));
+            string recovery = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-recovery-*.bak"));
+            Assert.Contains(recovery, error.Message);
+            Assert.Equal(original, File.ReadAllBytes(recovery));
+        }
+        Assert.Equal(0x42, File.ReadAllBytes(file.Path)[0]);
+    }
+
+    internal static void CreateHardLink(string link, string existing) =>
+        Assert.True(CreateHardLinkW(link, existing, 0), $"CreateHardLinkW failed ({Marshal.GetLastWin32Error()}).");
+
+    [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateHardLinkW(string link, string existing, nint security);
+
+    private sealed class FailingCopy : MemoryStream
+    {
+        public override void CopyTo(Stream destination, int bufferSize)
+        {
+            destination.WriteByte(0x42);
+            throw new IOException("Injected write failure.");
         }
     }
 
