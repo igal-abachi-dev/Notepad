@@ -85,7 +85,8 @@ From the command line, pass a path to open it. Use `/A` for ANSI, `/W` for UTF-1
 | [Piece tree](NeoEdit/Backend/PieceTreeBase.cs) | An augmented red-black tree stores spans of an immutable original string and an append-only edit buffer. Character and line metadata support offset lookup without flattening the document on every edit. The design draws on the piece tree described by the VS Code team. [VS Code text buffer reimplementation](https://code.visualstudio.com/blogs/2018/03/23/text-buffer-reimplementation) |
 | [NeoEditor layout](NeoEdit/NeoEditor.Layout.cs) | The custom control shapes text through Avalonia `TextLayout` and the Skia/HarfBuzz stack. It caches line layouts and draws the visible viewport. It uses the same layout for drawing, caret positions, and selection hit-testing. |
 | [Search and file services](Services/) | Search reuses a text snapshot for each document revision. The file service handles strict decoding, encoding, and staged saves. The draft store keeps checksummed checkpoints, and the settings service stores preferences in JSON. |
-| [Windows printing](Services/WindowsPrinting.cs) and [session handling](Services/WindowsSessionEnd.cs) | Windows integration handles native printing, IME requests, Jump List registration, and draft checkpoints for session end. The main editor, file picker, and editing dialogs use Avalonia. |
+| [Windows integration](Services/) | Native Windows APIs handle printing, Jump List registration, and draft checkpoints for session end. The editor handles native IME requests through its Avalonia input client. |
+| [Windows accessibility](WindowsAutomation/) | A UI Automation provider exposes the editor through `TextPattern` and `TextPattern2`, including character, word, and line ranges, caret and selection, and screen geometry. It reads the same piece tree and layout as the editor. |
 
 ## Build and test
 
@@ -120,4 +121,4 @@ The executable is written to `bin/Release/net9.0/win-x64/publish/Notepad.exe`. O
 
 - The Windows release smoke checks exercise the published executable, including Open and Save As, encoding selection, line-ending conversion, Go To Line, the hard-link save flow, and PDF output when Microsoft Print to PDF is available. [Release checks](ReleaseSmokeTest.cs)
 - Workload tests cover a 32 MiB log and editing and navigating a 20,000-character line. Shaping extremely long wrapped lines can still be expensive. [Workload tests](Tests/EditorWorkloadTests.cs)
-- The Avalonia file picker browses filesystem paths. Windows Shell virtual locations and extensions are outside its scope. UI Automation exposes the document value. Narrator text-range navigation is a remaining gap. [File picker](Views/FilePickerDialog.axaml.cs) · [Editor platform input](NeoEdit/NeoEditor.PlatformInput.cs)
+- The Avalonia file picker browses filesystem paths. Windows Shell virtual locations and extensions are outside its scope. The Windows release checks exercise the text provider through the system UI Automation client. An interactive Narrator session is a separate check. [File picker](Views/FilePickerDialog.axaml.cs) · [Text automation verification](WindowsAutomation/AutomationProbe.cs)

@@ -9,6 +9,8 @@ using Avalonia.Threading;
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using AutomationFailure = Notepad.WindowsAutomation.AutomationFailure;
+using EditorAutomationWindow = Notepad.WindowsAutomation.EditorAutomationWindow;
 
 namespace Notepad.NeoEdit;
 
@@ -22,24 +24,35 @@ public sealed partial class NeoEditor
 
     private void NotifyAutomationValueChanged()
     {
-        if (ControlAutomationPeer.FromElement(this) is EditorAutomationPeer peer)
-            peer.NotifyValueChanged();
+        try
+        {
+            if (ControlAutomationPeer.FromElement(this) is EditorAutomationPeer peer)
+                peer.NotifyValueChanged();
+        }
+        catch (Exception ex) when (AutomationFailure.CanRecover(ex))
+        {
+            AutomationFailure.Report("value notification", ex);
+        }
     }
 
     private sealed class EditorAutomationPeer(NeoEditor editor) : ControlAutomationPeer(editor), IValueProvider
     {
         private DispatcherTimer? _valueTimer;
         private string? _reportedValue;
+        private bool _notificationsFailed;
 
         protected override string GetClassNameCore() => nameof(NeoEditor);
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
+        protected override bool IsControlElementCore() => editor.WindowsAutomationHandle == 0 && base.IsControlElementCore();
+        protected override bool IsContentElementCore() => editor.WindowsAutomationHandle == 0 && base.IsContentElementCore();
         public bool IsReadOnly => !editor.IsEffectivelyEnabled;
         public string Value
         {
             get
             {
                 string text = editor.GetText();
-                if (OperatingSystem.IsWindows() && UiaClientsAreListening()) _reportedValue ??= text;
+                if (OperatingSystem.IsWindows() && editor.WindowsAutomationHandle == 0 &&
+                    EditorAutomationWindow.HasClients()) _reportedValue ??= text;
                 return text;
             }
         }
@@ -52,7 +65,8 @@ public sealed partial class NeoEditor
 
         public void NotifyValueChanged()
         {
-            if (!OperatingSystem.IsWindows() || !UiaClientsAreListening())
+            if (_notificationsFailed) return;
+            if (!OperatingSystem.IsWindows() || !EditorAutomationWindow.HasClients())
             {
                 _reportedValue = null;
                 return;
@@ -60,26 +74,34 @@ public sealed partial class NeoEditor
             if (_valueTimer == null)
             {
                 _valueTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
-                _valueTimer.Tick += (_, _) =>
-                {
-                    _valueTimer.Stop();
-                    if (!UiaClientsAreListening())
-                    {
-                        _reportedValue = null;
-                        return;
-                    }
-                    string? previous = _reportedValue;
-                    _reportedValue = editor.GetText();
-                    if (!ReferenceEquals(previous, _reportedValue))
-                        RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, previous, _reportedValue);
-                };
+                _valueTimer.Tick += (_, _) => PublishValueChange();
             }
             if (!_valueTimer.IsEnabled) _valueTimer.Start();
         }
 
-        [DllImport("UIAutomationCore.dll", ExactSpelling = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool UiaClientsAreListening();
+        private void PublishValueChange()
+        {
+            try
+            {
+                _valueTimer!.Stop();
+                if (!OperatingSystem.IsWindows() || editor.WindowsAutomationHandle != 0 ||
+                    !EditorAutomationWindow.HasClients())
+                {
+                    _reportedValue = null;
+                    return;
+                }
+                string? previous = _reportedValue;
+                _reportedValue = editor.GetText();
+                if (!ReferenceEquals(previous, _reportedValue))
+                    RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, previous, _reportedValue);
+            }
+            catch (Exception ex) when (AutomationFailure.CanRecover(ex))
+            {
+                _reportedValue = null;
+                _notificationsFailed = true;
+                AutomationFailure.Report("value notification", ex);
+            }
+        }
     }
 
     internal nint HandleWindowsImeRequest(nint request, nint data, ref bool handled)

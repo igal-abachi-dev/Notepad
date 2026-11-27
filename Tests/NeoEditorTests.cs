@@ -76,6 +76,57 @@ public class NeoEditorTests
         finally { window.Close(); }
     }
 
+    [AvaloniaTheory]
+    [InlineData("\u2764\uFE0F")]
+    [InlineData("\U0001F469\u200D\u2764\uFE0F\u200D\U0001F469")]
+    public void WordNavigationAndDeletion_KeepEmojiClustersTogether(string emoji)
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            string original = "a" + emoji + "b";
+            int afterEmoji = 1 + emoji.Length;
+            editor.LoadDocument(original);
+            editor.CaretOffset = 1;
+            window.KeyPress(Key.Right, RawInputModifiers.Control, PhysicalKey.ArrowRight, null);
+            Assert.Equal(afterEmoji, editor.CaretOffset);
+            window.KeyPress(Key.Left, RawInputModifiers.Control, PhysicalKey.ArrowLeft, null);
+            Assert.Equal(1, editor.CaretOffset);
+            window.KeyPress(Key.Delete, RawInputModifiers.Control, PhysicalKey.Delete, null);
+            Assert.Equal("ab", editor.Text);
+            editor.Undo();
+            Assert.Equal(original, editor.Text);
+            Assert.Equal(1, editor.CaretOffset);
+            editor.CaretOffset = afterEmoji;
+            window.KeyPress(Key.Back, RawInputModifiers.Control, PhysicalKey.Backspace, null);
+            Assert.Equal("ab", editor.Text);
+            editor.Undo();
+            Assert.Equal(original, editor.Text);
+            Assert.Equal(afterEmoji, editor.CaretOffset);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void DoubleClick_SelectionKeepsEmojiClusterTogether()
+    {
+        const string emoji = "\u2764\uFE0F";
+        var editor = new NeoEditor { ShowLineNumbers = false };
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument(emoji + "next");
+            var point = editor.TranslatePoint(new Point(5, 8), window)!.Value;
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            Assert.Equal(emoji, editor.GetSelectedText());
+        }
+        finally { window.Close(); }
+    }
+
     [AvaloniaFact]
     public void LinkDetection_OnlyReturnsWebUrlsAndExcludesWrappingPunctuation()
     {

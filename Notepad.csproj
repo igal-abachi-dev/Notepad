@@ -26,6 +26,8 @@
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
     <Compile Remove="Tests/**" />
+    <Compile Remove="WindowsAutomation/**" />
+    <ProjectReference Include="WindowsAutomation/WindowsAutomation.csproj" />
     <InternalsVisibleTo Include="Notepad.Tests" />
   </ItemGroup>
 

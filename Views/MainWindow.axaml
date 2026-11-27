@@ -148,6 +148,7 @@
                  AutomationProperties.Name="Overtype mode" />
     </Grid>
 
+    <Grid x:Name="EditorSurface">
     <ScrollViewer Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
       <neo:NeoEditor x:Name="Editor" DragDrop.AllowDrop="True"
                      AutomationProperties.Name="Document text"
@@ -191,5 +192,6 @@
         </neo:NeoEditor.ContextMenu>
       </neo:NeoEditor>
     </ScrollViewer>
+    </Grid>
   </DockPanel>
 </Window>

@@ -1,5 +1,8 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Automation;
+using Avalonia.Automation.Peers;
+using Avalonia.Automation.Provider;
 using Avalonia.Input;
 using Avalonia.Input.TextInput;
 using Avalonia.Interactivity;
@@ -7,6 +10,7 @@ using Avalonia.VisualTree;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using NotepadAvalonia.Views;
+using Notepad.WindowsAutomation;
 using System;
 using System.Globalization;
 using System.IO;
@@ -25,6 +29,22 @@ internal static partial class ReleaseSmokeTest
     private static async Task<string> ExerciseWindowsAsync(MainWindow window, string directory)
     {
         nint hwnd = window.TryGetPlatformHandle()!.Handle;
+        var editor = window.ViewModel.EditorControl!;
+        window.Activate();
+        editor.Focus();
+        editor.LoadDocument("first word\r\nsecond line");
+        editor.SetSelection(6, 4);
+        nint editorWindow = editor.WindowsAutomationHandle;
+        Require(editorWindow != 0, "The native text automation host was created.");
+        var automationRoot = ControlAutomationPeer.CreatePeerForElement(window) as IRootProvider;
+        var textPeer = editor.GetHostedTextPeer();
+        Require(textPeer != null && ReferenceEquals(automationRoot?.GetFocus(), textPeer),
+            "The Avalonia automation root routes editor focus to the native text host.");
+        var editorPoint = editor.TranslatePoint(new Point(12, 12), window);
+        Require(editorPoint.HasValue && ReferenceEquals(automationRoot?.GetPeerFromPoint(editorPoint.Value), textPeer),
+            "The Avalonia automation root routes editor hit testing to the native text host.");
+        string textAutomation = await Task.Run(() =>
+            AutomationProbe.Verify(hwnd, editorWindow, "first word\r\nsecond line")).WaitAsync(TimeSpan.FromSeconds(10));
         WindowsRecentDocuments.VerifyLink(Path.Combine(directory, "Jump List document.txt"));
         string linkedCheck = await VerifyLinkedSaveAsync(window, directory);
         string printCheck = await VerifyPdfSpoolAsync(directory);
@@ -32,7 +52,7 @@ internal static partial class ReleaseSmokeTest
         VerifySessionEnd(window);
         return "Windows smoke passed: Jump List link construction, IME geometry and reconversion requests, " +
             "cancelled sign-out and confirmed sign-out with draft recovery." + Environment.NewLine +
-            linkedCheck + Environment.NewLine + printCheck;
+            textAutomation + Environment.NewLine + linkedCheck + Environment.NewLine + printCheck;
     }
 
     private static async Task<string> VerifyLinkedSaveAsync(MainWindow window, string directory)

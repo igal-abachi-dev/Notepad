@@ -130,10 +130,11 @@ public sealed partial class NeoEditor : Control
         _caretOffset = _anchorOffset = 0;
         _preferredCaretX = null;
         _wrappedRowEnd = false;
+        if (OperatingSystem.IsWindows() && WindowsAutomationHandle != 0) _automationWindow?.ResetRanges();
         InvalidateDocumentLayout();
         Offset = default;
         NotifyCaretMoved();
-        NotifyAutomationValueChanged();
+        NotifyAutomationTextChanged();
     }
 
     public long CaptureSaveRevision()
@@ -338,6 +339,8 @@ public sealed partial class NeoEditor : Control
         _doc.Insert(offset, text);
         _snapshot = null;
         DocumentVersion++;
+        if (OperatingSystem.IsWindows() && WindowsAutomationHandle != 0)
+            _automationWindow?.TrackChange(offset, length, text.Length);
         InvalidateDocumentLayout(startLine, oldLastLine, oldLineCount);
     }
 
@@ -348,7 +351,7 @@ public sealed partial class NeoEditor : Control
         _wrappedRowEnd = false;
         UpdateCaret();
         TextChanged?.Invoke(this, EventArgs.Empty);
-        NotifyAutomationValueChanged();
+        NotifyAutomationTextChanged();
     }
 
     private void UpdateCaret()
@@ -364,6 +367,7 @@ public sealed partial class NeoEditor : Control
         var (line, column) = _doc.GetLineColumnFromOffset(_caretOffset);
         _inputMethod.NotifySelectionAndText();
         CaretMoved?.Invoke(this, (line + 1, column + 1));
+        NotifyNativeAutomationSelection();
     }
 
     public void InsertAtCaret(string text) => ReplaceRange(SelectionStart, SelectionLength, text);
@@ -474,7 +478,7 @@ public sealed partial class NeoEditor : Control
             DeleteSelection();
             return;
         }
-        int start = word ? _caretOffset : TextElementEdge(_caretOffset, -direction, advance: false);
+        int start = TextElementEdge(_caretOffset, -direction, advance: false);
         int end = word ? WordOffset(start, direction) : TextElementEdge(start, direction, advance: true);
         ReplaceRange(Math.Min(start, end), Math.Abs(end - start), "",
             word ? EditKind.Independent : direction < 0 ? EditKind.Backspace : EditKind.Delete);
@@ -494,24 +498,26 @@ public sealed partial class NeoEditor : Control
 
     private int WordOffset(int offset, int direction)
     {
+        int Advance(int boundary) => TextElementEdge(boundary, direction, advance: true);
+
         int CategoryAt(int boundary)
         {
-            int index = direction < 0 ? AdjacentOffset(boundary, -1) : boundary;
+            int index = direction < 0 ? Advance(boundary) : boundary;
             return WordCategory(index);
         }
 
+        offset = TextElementEdge(offset, -direction, advance: false);
         int edge = direction < 0 ? 0 : _doc.Length;
-        if (offset == edge) return offset;
         if (direction < 0)
             while (offset != edge && CategoryAt(offset) == 0)
-                offset = AdjacentOffset(offset, direction);
+                offset = Advance(offset);
         if (offset == edge) return offset;
         int category = CategoryAt(offset);
-        do { offset = AdjacentOffset(offset, direction); }
+        do { offset = Advance(offset); }
         while (offset != edge && CategoryAt(offset) == category);
         if (direction > 0 && category != 0)
             while (offset != edge && CategoryAt(offset) == 0)
-                offset = AdjacentOffset(offset, direction);
+                offset = Advance(offset);
         return offset;
     }
 

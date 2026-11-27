@@ -104,7 +104,7 @@ public partial class MainWindowViewModel
             {
                 var file = await PickFileAsync(original, saveEncoding: null);
                 if (file == null) return;
-                (path, encoding) = file;
+                (path, encoding, _) = file;
                 selectEncoding = false;
             }
 
@@ -209,7 +209,7 @@ public partial class MainWindowViewModel
         {
             var file = await PickSaveChoiceAsync(original, original.SaveEncodingType);
             return file is { Encoding: { } encoding } && Document == original &&
-                await SaveWithRetryAsync(original, file.Path, encoding);
+                await SaveWithRetryAsync(original, file.Path, encoding, createNew: !file.OverwriteConfirmed);
         }
         catch (Exception ex) when (IsFileError(ex))
         {
@@ -230,14 +230,15 @@ public partial class MainWindowViewModel
         new FilePickerDialog(document.IsUntitled ? null : document.FilePath, RecentFiles.FirstOrDefault(), saveEncoding)
             .ShowDialog<FilePickerDialog.Choice?>(GetMainWindow());
 
-    private async Task<bool> SaveWithRetryAsync(DocumentModel original, string path, FileEncodingType encoding)
+    private async Task<bool> SaveWithRetryAsync(DocumentModel original, string path, FileEncodingType encoding,
+        bool createNew = false)
     {
         HardLinkSaveTarget? approvedLink = null;
         try
         {
             while (Document == original)
             {
-                try { return await SaveRevisionAsync(original, path, encoding, approvedLink); }
+                try { return await SaveRevisionAsync(original, path, encoding, approvedLink, createNew); }
                 catch (HardLinkSaveRequiredException ex) when (approvedLink == null)
                 {
                     if (Document != original) return false;
@@ -253,6 +254,7 @@ public partial class MainWindowViewModel
                     if (file is not { Encoding: { } pickedEncoding }) return false;
                     path = file.Path;
                     encoding = pickedEncoding;
+                    createNew = !file.OverwriteConfirmed;
                 }
                 catch (EncoderFallbackException) when (encoding == FileEncodingType.ANSI && Document == original)
                 {
@@ -287,7 +289,7 @@ public partial class MainWindowViewModel
     }
 
     private async Task<bool> SaveRevisionAsync(DocumentModel original, string path, FileEncodingType encoding,
-        HardLinkSaveTarget? approvedLink)
+        HardLinkSaveTarget? approvedLink, bool createNew)
     {
         if (Document != original || EditorControl is not { } editor) return false;
         long revision = editor.CaptureSaveRevision();
@@ -304,7 +306,9 @@ public partial class MainWindowViewModel
                 ? original.SavedFileVersion : null;
             var fileVersion = approvedLink is { } approved
                 ? await _fileService.CommitHardLinkedFileAsync(path, content, encoding, expected, approved)
-                : await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
+                : createNew
+                    ? await _fileService.CommitNewFileAsync(path, content, encoding)
+                    : await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
             if (Document != original || EditorControl != editor) return true;
             editor.MarkSaved(revision);
             original.FilePath = path;

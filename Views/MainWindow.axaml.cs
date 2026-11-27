@@ -1,4 +1,6 @@
 ﻿using Avalonia;
+using Avalonia.Automation.Peers;
+using Avalonia.Automation.Provider;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
@@ -47,11 +49,32 @@ public partial class MainWindow : Window
             }
             RememberPlacement();
             if (OperatingSystem.IsWindows() && TryGetPlatformHandle()?.HandleDescriptor == "HWND")
+            {
                 UpdateInputDirection(GetKeyboardLayout(0));
+                Editor.AttachWindowsTextAutomation(this, EditorSurface);
+            }
             Editor.Focus();
         };
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDrop);
+    }
+
+    protected override AutomationPeer OnCreateAutomationPeer() => new MainWindowAutomationPeer(this);
+
+    private sealed class MainWindowAutomationPeer(MainWindow window) : WindowAutomationPeer(window), IRootProvider
+    {
+        AutomationPeer? IRootProvider.GetFocus() => window.Editor.IsFocused
+            ? window.Editor.GetHostedTextPeer() ?? GetFocus()
+            : GetFocus();
+
+        AutomationPeer? IRootProvider.GetPeerFromPoint(Point point)
+        {
+            if (window.TranslatePoint(point, window.Editor) is { } inEditor &&
+                new Rect(window.Editor.Bounds.Size).Contains(inEditor) &&
+                window.Editor.GetHostedTextPeer() is { } textPeer)
+                return textPeer;
+            return GetPeerFromPoint(point);
+        }
     }
 
     private nint OnWin32Message(nint window, uint message, nint wParam, nint lParam, ref bool handled)

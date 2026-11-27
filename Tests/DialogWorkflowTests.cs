@@ -141,9 +141,35 @@ public class DialogWorkflowTests
 
         name.Text = "extensionless";
         DefaultButton(picker).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Assert.Equal(new FilePickerDialog.Choice(Path.Combine(fixture.Folder, "extensionless"), FileEncodingType.UTF8),
+        Assert.Equal(new FilePickerDialog.Choice(Path.Combine(fixture.Folder, "extensionless"), FileEncodingType.UTF8, false),
             await result.WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Equal("original", await File.ReadAllTextAsync(existing));
+    }
+
+    [AvaloniaFact]
+    public async Task SaveAs_WhenAnotherWriterCreatesTheUnconfirmedPath_KeepsBothVersions()
+    {
+        using var fixture = new MainWindowFixture(new SaveCollisionFileService());
+        var editor = Assert.IsType<NeoEditor>(fixture.ViewModel.EditorControl);
+        editor.InsertAtCaret("our edits");
+        string destination = Path.Combine(fixture.Folder, "new.txt");
+
+        var save = fixture.ViewModel.SaveFileAsCommand.ExecuteAsync(null);
+        var picker = Assert.Single(fixture.Window.OwnedWindows.OfType<FilePickerDialog>());
+        var accept = picker.FindControl<Button>("AcceptButton")!;
+        await UntilAsync(() => accept.IsEnabled);
+        picker.FindControl<TextBox>("FileNameBox")!.Text = destination;
+        accept.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await UntilAsync(() => fixture.Window.OwnedWindows.Any(window => window.Title == "Notepad"));
+        var error = Assert.Single(fixture.Window.OwnedWindows.Where(window => window.Title == "Notepad"));
+        DefaultButton(error).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await save.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("another writer", await File.ReadAllTextAsync(destination));
+        Assert.Equal("our edits", editor.Text);
+        Assert.True(fixture.ViewModel.Document.IsModified);
+        Assert.True(fixture.ViewModel.Document.IsUntitled);
+        Assert.Empty(Directory.GetFiles(fixture.Folder, ".notepad-*.tmp"));
     }
 
     private static async Task UntilAsync(Func<bool> ready)
@@ -376,6 +402,15 @@ public class DialogWorkflowTests
         Assert.Empty(Directory.GetFiles(fixture.Folder, ".notepad-recovery-*.bak"));
     }
 
+    private sealed class SaveCollisionFileService : FileService
+    {
+        internal override async Task<FileVersion> CommitNewFileAsync(string path, string content, FileEncodingType encodingType)
+        {
+            await File.WriteAllTextAsync(path, "another writer");
+            return await base.CommitNewFileAsync(path, content, encodingType);
+        }
+    }
+
     private sealed class MainWindowFixture : IDisposable
     {
         private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("notepad-dialog-tests-");
@@ -383,9 +418,9 @@ public class DialogWorkflowTests
         public MainWindowViewModel ViewModel { get; }
         public string Folder => _directory.FullName;
 
-        public MainWindowFixture()
+        public MainWindowFixture(FileService? files = null)
         {
-            ViewModel = new MainWindowViewModel(new FileService(), new SearchService(),
+            ViewModel = new MainWindowViewModel(files ?? new FileService(), new SearchService(),
                 new SettingsService(Path.Combine(Folder, "settings.json")), new PrintService());
             Window = new MainWindow { DataContext = ViewModel };
             Window.Styles.Add(new FluentTheme());

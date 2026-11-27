@@ -632,11 +632,17 @@ public sealed partial class NeoEditor : ILogicalScrollable
         }
         else if (!shift && e.ClickCount == 2 && offset < _doc.Length)
         {
-            int category = WordCategory(offset);
-            int start = offset;
-            int end = AdjacentOffset(offset, 1);
-            while (start > 0 && WordCategory(AdjacentOffset(start, -1)) == category) start = AdjacentOffset(start, -1);
-            while (end < _doc.Length && WordCategory(end) == category) end = AdjacentOffset(end, 1);
+            int start = TextElementEdge(offset, -1, advance: false);
+            int category = WordCategory(start);
+            int end = TextElementEdge(start, 1, advance: true);
+            while (start > 0)
+            {
+                int previous = TextElementEdge(start, -1, advance: true);
+                if (WordCategory(previous) != category) break;
+                start = previous;
+            }
+            while (end < _doc.Length && WordCategory(end) == category)
+                end = TextElementEdge(end, 1, advance: true);
             MoveSelection(start, end);
         }
         else

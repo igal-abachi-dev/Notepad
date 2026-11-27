@@ -18,7 +18,7 @@ namespace NotepadAvalonia.Views;
 
 public partial class FilePickerDialog : Window
 {
-    internal sealed record Choice(string Path, FileEncodingType? Encoding);
+    internal sealed record Choice(string Path, FileEncodingType? Encoding, bool OverwriteConfirmed);
     private sealed record Location(string Name, string Path)
     {
         public override string ToString() => Name;
@@ -245,7 +245,7 @@ public partial class FilePickerDialog : Window
             if (!_closed)
             {
                 var encoding = (EncodingBox.SelectedItem as EncodingDialog.EncodingOption)?.Type;
-                Close(new Choice(target.Path, encoding));
+                Close(new Choice(target.Path, encoding, _saving && target.Exists));
             }
         }
         catch (Exception ex) when (IsPathError(ex))

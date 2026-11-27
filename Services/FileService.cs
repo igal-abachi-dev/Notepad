@@ -73,18 +73,21 @@ public partial class FileService
         LineEndingStyle lineEnding, FileVersion? expected = null) =>
         StageAndCommitFileAsync(path, content, encodingType, expected, hardLink: null);
 
+    internal virtual Task<FileVersion> CommitNewFileAsync(string path, string content, FileEncodingType encodingType) =>
+        StageAndCommitFileAsync(path, content, encodingType, expected: null, hardLink: null, createNew: true);
+
     internal Task<FileVersion> CommitHardLinkedFileAsync(string path, string content, FileEncodingType encodingType,
         FileVersion? expected, HardLinkSaveTarget hardLink) =>
         StageAndCommitFileAsync(path, content, encodingType, expected, hardLink);
 
     private async Task<FileVersion> StageAndCommitFileAsync(string path, string content, FileEncodingType encodingType,
-        FileVersion? expected, HardLinkSaveTarget? hardLink)
+        FileVersion? expected, HardLinkSaveTarget? hardLink, bool createNew = false)
     {
         // Preserve the separators already present in the editor buffer.
         var encoding = GetEncoding(encodingType);
 
         string destination = Path.GetFullPath(path);
-        if (File.Exists(destination))
+        if (!createNew && File.Exists(destination))
             destination = File.ResolveLinkTarget(destination, returnFinalTarget: true)?.FullName ?? destination;
 
         string tempPath = Path.Combine(Path.GetDirectoryName(destination)!, $".notepad-{Guid.NewGuid():N}.tmp");
@@ -106,7 +109,9 @@ public partial class FileService
 
             await Task.Run(() =>
             {
-                if (hardLink is { } approved)
+                if (createNew)
+                    File.Move(tempPath, destination);
+                else if (hardLink is { } approved)
                     CommitHardLinkedFile(tempPath, destination, expected, approved);
                 else
                     CommitStagedFile(tempPath, destination, expected);
