@@ -1,6 +1,7 @@
 ﻿using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using System;
 using System.Linq;
@@ -23,18 +24,21 @@ public partial class FontDialog : Window
         SizeBox.Value = (decimal)settings.FontSize;
         BoldBox.IsChecked = settings.IsBold;
         ItalicBox.IsChecked = settings.IsItalic;
+        LigaturesBox.IsChecked = settings.EnableFontLigatures;
         UpdatePreview();
 
         FontComboBox.SelectionChanged += (_, _) => UpdatePreview();
         SizeBox.ValueChanged += (_, _) => UpdatePreview();
         BoldBox.IsCheckedChanged += (_, _) => UpdatePreview();
         ItalicBox.IsCheckedChanged += (_, _) => UpdatePreview();
+        LigaturesBox.IsCheckedChanged += (_, _) => UpdatePreview();
     }
 
     public string SelectedFamily => FontComboBox.SelectedItem as string ?? FontManager.Current.DefaultFontFamily.Name;
     public double SelectedSize => (double)(SizeBox.Value ?? 11);
     public bool IsBold => BoldBox.IsChecked == true;
     public bool IsItalic => ItalicBox.IsChecked == true;
+    public bool EnableFontLigatures => LigaturesBox.IsChecked == true;
 
     private void UpdatePreview()
     {
@@ -42,6 +46,7 @@ public partial class FontDialog : Window
         PreviewText.FontSize = SelectedSize * 96 / 72;
         PreviewText.FontWeight = IsBold ? FontWeight.Bold : FontWeight.Normal;
         PreviewText.FontStyle = IsItalic ? FontStyle.Italic : FontStyle.Normal;
+        PreviewText.FontFeatures = EditorFontFeatures.ForLigatures(EnableFontLigatures);
     }
 
     private void OnOk(object? sender, RoutedEventArgs e)

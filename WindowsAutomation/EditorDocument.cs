@@ -16,6 +16,7 @@ public abstract class EditorDocument
     public abstract int Length { get; }
     public abstract bool IsFocused { get; }
     public abstract bool IsEnabled { get; }
+    public virtual bool IsReadOnly => !IsEnabled;
     public abstract TextSpan Selection { get; }
     public abstract int Caret { get; }
     public abstract ScreenRectangle Bounds { get; }

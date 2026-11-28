@@ -1,18 +1,27 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="NotepadAvalonia.Views.AboutDialog"
-        Width="320"
-        Height="200"
+        Width="360"
+        SizeToContent="Height"
         CanResize="False"
+        ShowInTaskbar="False"
+        Icon="/Assets/notepad.ico"
         WindowStartupLocation="CenterOwner"
         Title="About Notepad">
-  <StackPanel Margin="12" Spacing="8">
-    <TextBlock Text="Notepad (Avalonia)" FontWeight="Bold" FontSize="16" />
-    <TextBlock Text="A lightweight clone of classic Windows Notepad built with C# and Avalonia." TextWrapping="Wrap" />
-    <TextBlock Text="Features: encoding detection, find/replace, go to line, word wrap, font selection, status bar, and settings persistence." TextWrapping="Wrap" />
-    <TextBlock Text="© 2025" />
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-      <Button Content="OK" Width="80" Click="OnClose" />
+  <StackPanel Margin="24,22,24,18" Spacing="16" UseLayoutRounding="True">
+    <StackPanel Spacing="4">
+      <TextBlock Text="Notepad" FontWeight="SemiBold" FontSize="26" TextAlignment="Center" />
+      <TextBlock x:Name="VersionText" TextAlignment="Center" />
     </StackPanel>
+    <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+    <StackPanel Spacing="6">
+      <TextBlock Text="A lightweight plain-text editor built with C# and Avalonia."
+                 TextAlignment="Center" TextWrapping="Wrap" />
+      <TextBlock Text="© 2025 Igal Abachi" TextAlignment="Center" />
+      <TextBlock Text="BSD 3-Clause license" TextAlignment="Center" />
+    </StackPanel>
+    <Button Content="OK" Classes="accent" Click="OnClose" IsDefault="True" IsCancel="True"
+            HorizontalAlignment="Center" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+            MinWidth="96" MinHeight="32" />
   </StackPanel>
 </Window>

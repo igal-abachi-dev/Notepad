@@ -1,4 +1,5 @@
 using Avalonia;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -17,6 +18,35 @@ namespace Notepad.Tests;
 
 public class NeoEditorClipboardTests
 {
+    [AvaloniaFact]
+    public async Task StandaloneEditor_ClipboardShortcutsWorkWithoutWindowCommands()
+    {
+        const string selected = "first\r\nsecond";
+        var editor = new NeoEditor();
+        var window = new Window { Content = editor };
+        try
+        {
+            window.Show();
+            Assert.True(editor.Focus());
+            editor.LoadDocument(selected);
+            editor.SetSelection(selected.Length, -selected.Length);
+            var clipboard = Assert.IsAssignableFrom<IClipboard>(window.Clipboard);
+            await clipboard.SetTextAsync("previous");
+            var primary = OperatingSystem.IsMacOS() ? RawInputModifiers.Meta : RawInputModifiers.Control;
+
+            window.KeyPress(Key.C, primary, PhysicalKey.C, null);
+            Assert.Equal(selected, await clipboard.TryGetTextAsync());
+            Assert.Equal(selected, editor.GetSelectedText());
+            window.KeyPress(Key.X, primary, PhysicalKey.X, null);
+            Assert.Empty(editor.Text);
+            window.KeyPress(Key.V, primary, PhysicalKey.V, null);
+            Assert.Equal(selected, editor.Text);
+            editor.Undo();
+            Assert.Empty(editor.Text);
+        }
+        finally { window.Close(); }
+    }
+
     [AvaloniaTheory]
     [InlineData("middle", "new text")]
     [InlineData("first\r\nsecond", "one\r\ntwo\r\nthree")]

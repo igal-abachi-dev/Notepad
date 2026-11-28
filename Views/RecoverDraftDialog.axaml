@@ -5,8 +5,13 @@
         Title="Recover Drafts" Width="500" Height="340"
         MinWidth="360" MinHeight="230"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-  <Grid Margin="16" RowDefinitions="*,Auto" RowSpacing="12">
+  <Grid Margin="16" RowDefinitions="*,Auto" RowSpacing="12" UseLayoutRounding="True">
     <ListBox x:Name="DraftList" AutomationProperties.Name="Drafts">
+      <ListBox.Styles>
+        <Style Selector="ListBoxItem">
+          <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        </Style>
+      </ListBox.Styles>
       <ListBox.ItemTemplate>
         <DataTemplate x:DataType="services:DraftInfo">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
@@ -21,9 +26,9 @@
       </ListBox.ItemTemplate>
     </ListBox>
     <TextBlock x:Name="EmptyMessage" Text="No drafts are available." VerticalAlignment="Center" HorizontalAlignment="Center" />
-    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button x:Name="RestoreButton" Content="_Recover" IsDefault="True" Click="OnRecover" MinWidth="90" />
-      <Button Content="Cancel" IsCancel="True" Click="OnCancel" MinWidth="90" />
+    <StackPanel Grid.Row="1" Classes="dialog-actions">
+      <Button x:Name="RestoreButton" Content="_Recover" Classes="accent" IsDefault="True" Click="OnRecover" />
+      <Button Content="Cancel" IsCancel="True" Click="OnCancel" />
     </StackPanel>
   </Grid>
 </Window>

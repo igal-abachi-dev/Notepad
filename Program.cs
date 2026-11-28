@@ -12,6 +12,13 @@ namespace AvaloniaNotePad
         [STAThread]
         public static void Main(string[] args)
         {
+            if (OperatingSystem.IsWindows() && args is [ElevatedSave.WorkerSwitch, var request, var seal])
+            {
+                Environment.ExitCode = (int)(ElevatedSave.IsAdministrator()
+                    ? ElevatedSave.CommitRequestAsync(new FileService(), request, seal).GetAwaiter().GetResult()
+                    : ElevatedSave.WorkerResult.Failed);
+                return;
+            }
             if (OperatingSystem.IsWindows() && args is not ["--verify-release", _])
                 WindowsRecentDocuments.RegisterApplication();
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);

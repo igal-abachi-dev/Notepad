@@ -26,7 +26,8 @@ public class SettingsService
     public SettingsService(string? settingsPath = null)
     {
         _settingsPath = Path.GetFullPath(string.IsNullOrWhiteSpace(settingsPath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NotepadAvalonia", "settings.json")
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData,
+                Environment.SpecialFolderOption.DoNotVerify), "NotepadAvalonia", "settings.json")
             : settingsPath);
     }
 
@@ -43,7 +44,7 @@ public class SettingsService
             settings.RecentFiles.RemoveAll(string.IsNullOrWhiteSpace);
             settings.Search.SearchString ??= "";
             settings.Search.ReplaceString ??= "";
-            if (string.IsNullOrWhiteSpace(settings.Editor.FontFamily)) settings.Editor.FontFamily = "Consolas";
+            if (string.IsNullOrWhiteSpace(settings.Editor.FontFamily)) settings.Editor.FontFamily = EditorSettings.DefaultFontFamily;
             settings.Editor.FontSize = double.IsFinite(settings.Editor.FontSize) ? Math.Clamp(settings.Editor.FontSize, 6, 144) : 11;
             settings.Editor.ZoomLevel = Math.Clamp(settings.Editor.ZoomLevel, 10, 500);
             if (!Enum.IsDefined(settings.Editor.DefaultEncoding)) settings.Editor.DefaultEncoding = FileEncodingType.UTF8;

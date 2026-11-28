@@ -7,6 +7,7 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Input.TextInput;
+using Avalonia.Media;
 using Notepad.NeoEdit;
 using System;
 using System.Threading.Tasks;
@@ -16,6 +17,203 @@ namespace Notepad.Tests;
 
 public class NeoEditorTests
 {
+    [AvaloniaFact]
+    public void Enter_UsesManualEditingByDefaultAndCopiesIndentWhenEnabled()
+    {
+        var editor = new NeoEditor { Text = "\t  statement" };
+        var window = Show(editor);
+        try
+        {
+            editor.CaretOffset = editor.TextLength;
+            Press(window, Key.Enter, PhysicalKey.Enter);
+            Assert.Equal("\t  statement\r\n", editor.Text);
+            editor.Undo();
+
+            editor.AutoIndent = true;
+            Press(window, Key.Enter, PhysicalKey.Enter);
+            Assert.Equal("\t  statement\r\n\t  ", editor.Text);
+            editor.Undo();
+            Assert.Equal("\t  statement", editor.Text);
+
+            editor.CaretOffset = 1;
+            Press(window, Key.Enter, PhysicalKey.Enter);
+            Assert.Equal("\t\r\n\t  statement", editor.Text);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void LineShortcuts_InsertBelowMoveAndDuplicateWithoutSplittingTheActiveLine()
+    {
+        var editor = new NeoEditor { Text = "one\r\ntwo\nthree" };
+        var window = Show(editor);
+        try
+        {
+            editor.CaretOffset = 1;
+            Press(window, Key.Enter, PhysicalKey.Enter, RawInputModifiers.Shift);
+            Assert.Equal("one\r\n\r\ntwo\nthree", editor.Text);
+            Assert.Equal(5, editor.CaretOffset);
+            editor.Undo();
+            editor.CaretOffset = 6;
+            Press(window, Key.Up, PhysicalKey.ArrowUp, RawInputModifiers.Alt);
+            Assert.Equal("two\r\none\nthree", editor.Text);
+            Assert.Equal(1, editor.CaretOffset);
+            Press(window, Key.Down, PhysicalKey.ArrowDown, RawInputModifiers.Alt | RawInputModifiers.Shift);
+            Assert.Equal("two\r\ntwo\r\none\nthree", editor.Text);
+            Assert.Equal(6, editor.CaretOffset);
+            editor.Undo();
+            editor.Undo();
+            Assert.Equal("one\r\ntwo\nthree", editor.Text);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task ColumnEditing_ReplacesAcrossRowsAndRestoresTheRectangleOnUndo()
+    {
+        var editor = new NeoEditor { Text = "abc\r\ndef\n", WordWrap = false };
+        var window = Show(editor);
+        try
+        {
+            editor.CaretOffset = 1;
+            var modifiers = RawInputModifiers.Alt | RawInputModifiers.Shift;
+            Press(window, Key.Right, PhysicalKey.ArrowRight, modifiers);
+            Press(window, Key.Down, PhysicalKey.ArrowDown, modifiers);
+            Press(window, Key.Down, PhysicalKey.ArrowDown, modifiers);
+            Assert.True(editor.HasColumnSelection);
+            Assert.Equal("b\r\ne\r\n", editor.GetSelectedText());
+            await editor.CopyAsync();
+            Assert.Equal("b\r\ne\r\n", await window.Clipboard!.TryGetTextAsync());
+
+            window.KeyTextInput("Z");
+            Assert.Equal("aZc\r\ndZf\n Z", editor.Text);
+            Assert.True(editor.HasColumnSelection);
+            editor.Undo();
+            Assert.Equal("abc\r\ndef\n", editor.Text);
+            Assert.Equal("b\r\ne\r\n", editor.GetSelectedText());
+
+            await window.Clipboard!.SetTextAsync("1\n2\n3");
+            await editor.PasteAsync();
+            Assert.Equal("a1c\r\nd2f\n 3", editor.Text);
+            Press(window, Key.Escape, PhysicalKey.Escape);
+            Assert.False(editor.HasColumnSelection);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task ReadOnly_AllowsKeyboardSelectionAndCopyWhileBlockingInteractiveEdits()
+    {
+        var editor = new NeoEditor { Text = "abc" };
+        var window = Show(editor);
+        try
+        {
+            editor.ReplaceRange(0, 1, "A");
+            editor.CaretOffset = 0;
+            editor.IsReadOnly = true;
+            Assert.False(InputMethod.GetIsInputMethodEnabled(editor));
+            Press(window, Key.Right, PhysicalKey.ArrowRight, RawInputModifiers.Shift);
+            Assert.Equal("A", editor.GetSelectedText());
+
+            var clipboard = window.Clipboard!;
+            await clipboard.SetTextAsync("old");
+            var primary = OperatingSystem.IsMacOS() ? RawInputModifiers.Meta : RawInputModifiers.Control;
+            Press(window, Key.C, PhysicalKey.C, primary);
+            Assert.Equal("A", await clipboard.TryGetTextAsync());
+            window.KeyTextInput("x");
+            Press(window, Key.Delete, PhysicalKey.Delete);
+            Press(window, Key.Back, PhysicalKey.Backspace);
+            Press(window, Key.Enter, PhysicalKey.Enter);
+            await editor.CutAsync();
+            await editor.PasteAsync();
+            editor.Undo();
+            Assert.False(editor.CanUndo);
+            Assert.Equal("Abc", editor.Text);
+
+            var peer = ControlAutomationPeer.CreatePeerForElement(editor)!;
+            var provider = Assert.IsAssignableFrom<IValueProvider>(peer.GetProvider<IValueProvider>());
+            Assert.True(provider.IsReadOnly);
+            Assert.Throws<InvalidOperationException>(() => provider.SetValue("blocked"));
+            var nativeDocument = editor.CreateAutomationDocument();
+            Assert.True(nativeDocument.IsReadOnly);
+            Assert.True(nativeDocument.IsEnabled);
+            Assert.Throws<InvalidOperationException>(() => nativeDocument.SetText("blocked"));
+
+            editor.ReplaceRange(1, 1, "B");
+            Assert.Equal("ABc", editor.Text);
+            editor.IsReadOnly = false;
+            Assert.True(InputMethod.GetIsInputMethodEnabled(editor));
+            editor.Undo();
+            Assert.Equal("Abc", editor.Text);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void DisplayAnnotations_AlignPanesWithoutChangingTextOrDocumentOffsets()
+    {
+        var left = new NeoEditor { Height = 42, Text = "first\r\nadded\r\nlast" };
+        var right = new NeoEditor { Height = 42, Text = "first\r\nlast", IsReadOnly = true };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), Children = { left, right } };
+        Grid.SetColumn(right, 1);
+        var window = new Window { Content = grid, Width = 400, Height = 100 };
+        window.Show();
+        window.UpdateLayout();
+        try
+        {
+            double rowHeight = left.ScrollSize.Height;
+            long revision = right.DocumentVersion;
+            left.SetLineSpacers([new(left.LineCount, 2)]);
+            right.SetLineSpacers([new(1, 1), new(right.LineCount, 2)]);
+            right.SetDecorations([new(0, Brushes.LightYellow, Brushes.Orange)], [new(0, 2, Brushes.Yellow)]);
+            Assert.Equal(left.GetLineTop(2), right.GetLineTop(1), 6);
+            Assert.Equal(left.Extent.Height, right.Extent.Height, 6);
+            left.Offset = new Vector(0, rowHeight);
+            right.Offset = new Vector(0, left.Offset.Y);
+            Assert.Equal(left.Offset.Y, right.Offset.Y, 6);
+            var gap = right.PointToScreen(new Point(40, rowHeight / 2));
+            Assert.Equal(right.GetLineStartOffset(1), right.CreateAutomationDocument().HitTest(gap.X, gap.Y));
+
+            right.SelectAll();
+            Assert.Equal("first\r\nlast", right.GetSelectedText());
+            Assert.Equal(2, right.LineCount);
+            Assert.Equal(revision, right.DocumentVersion);
+            Assert.False(right.IsModified);
+            Assert.Throws<ArgumentOutOfRangeException>(() => right.SetLineSpacers([new(3, 1)]));
+            Assert.Throws<ArgumentOutOfRangeException>(() => right.SetDecorations(inline: [new(0, 999, Brushes.Yellow)]));
+            Assert.Equal(left.GetLineTop(2), right.GetLineTop(1), 6);
+
+            right.WordWrap = true;
+            Assert.Equal(rowHeight, right.GetLineTop(1), 6);
+            right.WordWrap = false;
+            Assert.Equal(left.GetLineTop(2), right.GetLineTop(1), 6);
+            right.ReplaceRange(right.GetLineStartOffset(1), 4, "updated");
+            Assert.Equal("first\r\nupdated", right.Text);
+            Assert.Equal(rowHeight, right.GetLineTop(1), 6);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void SearchViewport_FollowsVisibleRowsInsideOneWrappedLine()
+    {
+        var editor = new NeoEditor { WordWrap = true, Width = 220, Height = 80 };
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument(string.Concat(System.Linq.Enumerable.Repeat("one wrapped line ", 80)));
+            window.UpdateLayout();
+            var top = editor.GetVisibleTextRange();
+            editor.Offset = new Vector(0, editor.Extent.Height / 2);
+            var middle = editor.GetVisibleTextRange();
+
+            Assert.Equal(0, top.Start);
+            Assert.True(middle.Start > top.End);
+            Assert.InRange(middle.End, middle.Start + 1, editor.TextLength - 1);
+        }
+        finally { window.Close(); }
+    }
+
     [AvaloniaFact]
     public void Overtype_ReplacesGraphemesWithoutEatingTheNewline_AndUndoRestoresThem()
     {
@@ -137,6 +335,43 @@ public class NeoEditorTests
     }
 
     [AvaloniaFact]
+    public void MarkdownLink_ModifierHoverUsesHandCursorAndClickUsesTheDestination()
+    {
+        const string markup = "[Notepad4](https://github.com/zufuliu/notepad4)[next](https://example.test/a_(b)?q=!)";
+        var editor = new NeoEditor { Text = markup, ShowLineNumbers = false, WordWrap = false };
+        var window = Show(editor);
+        try
+        {
+            Assert.True(editor.Focus());
+            Uri? requested = null;
+            editor.WebLinkRequested += (_, link) => requested = link;
+            var normal = editor.Cursor;
+            int start = markup.IndexOf("https://", StringComparison.Ordinal);
+            var first = Assert.IsType<NeoEditor.WebLinkRange>(editor.GetWebLinkRangeAt(start));
+            Assert.Equal((start, "https://github.com/zufuliu/notepad4".Length), (first.Start, first.Length));
+            Assert.Null(editor.GetWebLinkAt(first.Start + first.Length));
+            int second = markup.IndexOf("https://example", StringComparison.Ordinal);
+            Assert.Equal("https://example.test/a_(b)?q=!", editor.GetWebLinkAt(second)?.AbsoluteUri);
+
+            var modifier = OperatingSystem.IsMacOS() ? RawInputModifiers.Meta : RawInputModifiers.Control;
+            Point position = default;
+            for (int x = 70; x < 250 && ReferenceEquals(normal, editor.Cursor); x += 5)
+            {
+                position = editor.TranslatePoint(new Point(x, 8), window)!.Value;
+                window.MouseMove(position, modifier);
+            }
+            Assert.NotSame(normal, editor.Cursor);
+            window.MouseDown(position, MouseButton.Left, modifier);
+            window.MouseUp(position, MouseButton.Left, modifier);
+            Assert.Equal(first.Uri, requested);
+            Assert.Equal(markup, editor.Text);
+            window.MouseMove(position + new Vector(1, 0), RawInputModifiers.None);
+            Assert.Same(normal, editor.Cursor);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
     public void Backspace_AfterAnEditJoinsCrLf_RemovesTheEntireSeparator()
     {
         var editor = new NeoEditor();
@@ -241,6 +476,13 @@ public class NeoEditorTests
             Assert.False(editor.IsModified);
 
             editor.InsertAtCaret("x");
+            editor.SetSelection(longLine.Length + 1, -9);
+            editor.WordWrap = false;
+            Assert.Equal((longLine.Length - 8, 9, longLine.Length - 8),
+                (editor.SelectionStart, editor.SelectionLength, editor.CaretOffset));
+            editor.WordWrap = true;
+            Assert.Equal((longLine.Length - 8, 9, longLine.Length - 8),
+                (editor.SelectionStart, editor.SelectionLength, editor.CaretOffset));
             editor.WordWrap = false;
             editor.Undo();
             Assert.Equal($"{longLine}\r\n{longLine}", editor.Text);
@@ -311,6 +553,58 @@ public class NeoEditorTests
         Assert.True(editor.IsModified);
         editor.Undo();
         Assert.Equal("original", provider.Value);
+    }
+
+    [AvaloniaFact]
+    public void TextInput_JoinsSplitSurrogatesWithoutCreatingAnInvalidEdit()
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument("first second");
+            editor.SetSelection(5, -5);
+            window.KeyTextInput("\uD83D");
+            Assert.Equal("first", editor.GetSelectedText());
+            Assert.False(editor.IsModified);
+            Assert.False(editor.CanUndo);
+
+            window.KeyTextInput("\uDE00");
+            Assert.Equal("\U0001F600 second", editor.Text);
+            Assert.Equal(2, editor.CaretOffset);
+            editor.Undo();
+            Assert.Equal("first second", editor.Text);
+            Assert.Equal((5, 0), (editor.SelectionAnchor, editor.CaretOffset));
+            Assert.False(editor.IsModified);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void TextInput_DiscardsSurrogateFragmentsAfterOtherInputOrAnEditorChange()
+    {
+        var editor = new NeoEditor();
+        var window = Show(editor);
+        try
+        {
+            editor.LoadDocument("a");
+            window.KeyTextInput("\uD83D");
+            window.KeyTextInput("b");
+            window.KeyTextInput("\uDE00");
+            Assert.Equal("ba", editor.Text);
+
+            window.KeyTextInput("\uD83D");
+            editor.CaretOffset = 2;
+            window.KeyTextInput("\uDE00");
+            Assert.Equal("ba", editor.Text);
+
+            window.KeyTextInput("\uD83D");
+            editor.LoadDocument("new");
+            window.KeyTextInput("\uDE00");
+            Assert.Equal("new", editor.Text);
+            Assert.False(editor.CanUndo);
+        }
+        finally { window.Close(); }
     }
 
     [AvaloniaFact]

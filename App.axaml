@@ -1,31 +1,21 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="AvaloniaNotePad.App"
-             xmlns:local="using:AvaloniaNotePad"
-             xmlns:avaloniaEdit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
              RequestedThemeVariant="Default">
-             <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
-  
     <Application.Styles>
         <FluentTheme />
-        
-        <!-- Custom styles for notepad -->
-        <Style Selector="Button.close-tab">
-            <Setter Property="MinWidth" Value="16" />
-            <Setter Property="MinHeight" Value="16" />
-            <Setter Property="Padding" Value="2" />
-            <Setter Property="FontSize" Value="10" />
+
+        <Style Selector="StackPanel.dialog-actions">
+            <Setter Property="Orientation" Value="Horizontal" />
+            <Setter Property="HorizontalAlignment" Value="Right" />
+            <Setter Property="Spacing" Value="8" />
         </Style>
-        
-        <Style Selector="Button.close-tab:pointerover">
-            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}" />
+        <Style Selector="StackPanel.dialog-actions > Button">
+            <Setter Property="MinWidth" Value="88" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="12,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
-        
-        <!-- Tab styling to match Windows 11 Notepad -->
-        <Style Selector="TabItem">
-            <Setter Property="Padding" Value="12,6" />
-            <Setter Property="FontSize" Value="13" />
-        </Style>
-        
     </Application.Styles>
 </Application>

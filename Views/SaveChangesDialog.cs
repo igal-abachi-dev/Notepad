@@ -1,7 +1,6 @@
 ﻿using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -15,7 +14,7 @@ internal static class SaveChangesDialog
             [("_Save", DialogChoice.Yes), ("Do_n't Save", DialogChoice.No), ("Cancel", DialogChoice.Cancel)]);
 }
 
-internal enum DialogChoice { None, Ok, Yes, No, Cancel, UpdateAllLinks, SaveAs }
+internal enum DialogChoice { None, Ok, Yes, No, Cancel, UpdateAllLinks, SaveAs, SaveAsAdministrator }
 internal enum MessageButtons { Ok, YesNo, YesNoCancel }
 
 internal static class MessageDialog
@@ -36,23 +35,25 @@ internal static class MessageDialog
             Title = title, Width = 440, SizeToContent = SizeToContent.Height, CanResize = false,
             ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
+        var buttons = new StackPanel { Classes = { "dialog-actions" } };
         for (int i = 0; i < actions.Count; i++)
         {
             var (label, result) = actions[i];
             var button = new Button
             {
-                Content = label, MinWidth = 86, IsDefault = defaultChoice.HasValue ? result == defaultChoice : i == 0,
+                Content = label, IsDefault = defaultChoice.HasValue ? result == defaultChoice : i == 0,
                 IsCancel = result == DialogChoice.Cancel || actions.Count == 1
             };
+            if (button.IsDefault && (!button.IsCancel || actions.Count == 1))
+                button.Classes.Add("accent");
             AutomationProperties.SetAutomationId(button, $"MessageDialog{result}");
             button.Click += (_, _) => dialog.Close(result);
             buttons.Children.Add(button);
         }
-        var panel = new StackPanel { Margin = new Thickness(18), Spacing = 16 };
+        var panel = new StackPanel { Margin = new Thickness(16), Spacing = 16, UseLayoutRounding = true };
         var body = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap };
         AutomationProperties.SetAutomationId(body, "MessageDialogText");
-        panel.Children.Add(body);
+        panel.Children.Add(new ScrollViewer { MaxHeight = 260, Content = body });
         panel.Children.Add(buttons);
         dialog.Content = panel;
         return dialog.ShowDialog<DialogChoice>(owner);

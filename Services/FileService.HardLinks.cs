@@ -21,18 +21,7 @@ public partial class FileService
         }
 
         // Save As may target a file for which we have never read the contents.
-        // Query its attributes without requiring read access to the file data.
-        if (path.Length >= 260 && !path.StartsWith(@"\\?\", StringComparison.Ordinal) &&
-            !path.StartsWith(@"\\.\", StringComparison.Ordinal))
-            path = path.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + path[2..] : @"\\?\" + path;
-        using var metadata = CreateFileW(path, 0, FileShare.ReadWrite | FileShare.Delete, 0, FileMode.Open, 0, 0);
-        if (metadata.IsInvalid)
-        {
-            int error = Marshal.GetLastWin32Error();
-            if (error is 2 or 3) return false;
-            throw new IOException("Cannot check the file's hard links.", new Win32Exception(error));
-        }
-        var observed = ReadLinkInformation(metadata);
+        if (ReadLinkInformation(path) is not { } observed) return false;
         if (observed.LinkCount <= 1) return true;
 
         using var file = OpenForVersionCheck(path);
@@ -43,21 +32,28 @@ public partial class FileService
 
     private static void CommitHardLinkedFile(string staging, string path, FileVersion? expected, HardLinkSaveTarget approved)
     {
-        if (!OperatingSystem.IsWindows()) throw new IOException("Updating all hard links requires Windows.");
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux()))
+            throw new IOException("Updating all hard links is supported on Windows and Linux.");
 
         using var data = File.OpenRead(staging);
         using var target = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        // Windows enforces sharing across every hard link to this file. Denying
-        // access and deletion keeps the validation, backup, and write together.
+        // The exclusive file open applies across all aliases. On Linux the lock is advisory.
         var info = ReadLinkInformation(target.SafeFileHandle);
         if (info.LinkCount <= 1 || info.Volume != approved.Volume || info.Index != approved.Index ||
             (expected != null && expected != approved.Version))
             throw new FileChangedException();
         VerifyVersion(target, approved.Version);
-        WriteWithRecoveryCopy(target, data);
+        WriteWithRecoveryCopy(target, data, VerifyLinuxTarget);
+
+        void VerifyLinuxTarget()
+        {
+            if (!OperatingSystem.IsLinux()) return;
+            if (ReadLinuxLinkInformation(path) != info) throw new FileChangedException();
+            if ((File.GetUnixFileMode(target.SafeFileHandle) & UnixWriteBits) == 0) throw new ReadOnlyFileException();
+        }
     }
 
-    internal static void WriteWithRecoveryCopy(FileStream target, Stream data)
+    internal static void WriteWithRecoveryCopy(FileStream target, Stream data, Action? beforeWrite = null)
     {
         string directory = Path.GetDirectoryName(target.Name)!;
         string filename = Path.GetFileName(target.Name);
@@ -75,6 +71,7 @@ public partial class FileService
                 target.CopyTo(recovery);
                 recovery.Flush(flushToDisk: true);
             }
+            beforeWrite?.Invoke();
             backupReady = true;
 
             target.Position = 0;
@@ -96,7 +93,11 @@ public partial class FileService
     private static FileStream CreateRecoveryCopy(FileStream target, string path)
     {
         if (!OperatingSystem.IsWindows())
-            return File.Open(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            return new FileStream(path, new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None,
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+            });
 
         // A copy next to a restricted file must not inherit wider access from the folder.
         var access = new FileSecurity();
@@ -107,12 +108,25 @@ public partial class FileService
             FileOptions.None, access);
     }
 
-    private static (uint LinkCount, uint Volume, ulong Index) ReadLinkInformation(SafeFileHandle file)
+    private static FileLinkInformation? ReadLinkInformation(string path)
     {
+        if (OperatingSystem.IsLinux()) return ReadLinuxLinkInformation(path);
+        using var handle = CreateFileW(ToExtendedWindowsPath(path), 0, FileShare.ReadWrite | FileShare.Delete, 0, FileMode.Open, 0, 0);
+        if (!handle.IsInvalid) return ReadLinkInformation(handle);
+        int error = Marshal.GetLastPInvokeError();
+        if (error is 2 or 3) return null;
+        throw new IOException("Cannot check the file's hard links.", new Win32Exception(error));
+    }
+
+    private static FileLinkInformation ReadLinkInformation(SafeFileHandle file)
+    {
+        if (OperatingSystem.IsLinux()) return ReadLinuxLinkInformation(file);
         if (!GetFileInformationByHandle(file, out var info))
             throw new IOException("Cannot check the file's hard links.", new Win32Exception(Marshal.GetLastWin32Error()));
-        return (info.LinkCount, info.VolumeSerial, ((ulong)info.IndexHigh << 32) | info.IndexLow);
+        return new(info.LinkCount, info.VolumeSerial, ((ulong)info.IndexHigh << 32) | info.IndexLow);
     }
+
+    private readonly record struct FileLinkInformation(uint LinkCount, ulong Volume, ulong Index);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FileInformation
@@ -130,7 +144,7 @@ public partial class FileService
     private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation info);
 }
 
-internal readonly record struct HardLinkSaveTarget(uint Volume, ulong Index, FileVersion Version);
+internal readonly record struct HardLinkSaveTarget(ulong Volume, ulong Index, FileVersion Version);
 
 internal sealed class HardLinkSaveRequiredException(HardLinkSaveTarget target)
     : IOException("This file has multiple hard links.")

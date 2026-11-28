@@ -14,7 +14,11 @@ using System.Threading.Tasks;
 namespace NotepadAvalonia.Services;
 
 public sealed record DraftSnapshot(string Content, string? Path, FileEncodingType Encoding, LineEndingStyle LineEnding,
-    int Anchor, int Caret, FileVersion? SavedFileVersion, DateTimeOffset Updated, string? Preview = null);
+    int Anchor, int Caret, FileVersion? SavedFileVersion, DateTimeOffset Updated, string? Preview = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SuggestedExtension { get; init; }
+}
 
 public sealed record DraftInfo(Guid Id, string Name, string? Path, DateTimeOffset Updated, string? Preview)
 {
@@ -30,7 +34,8 @@ internal partial class DraftJsonContext : JsonSerializerContext;
 public sealed class DraftStore(string directory)
 {
     public static DraftStore ForCurrentUser() => new(System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadAvalonia", "Drafts"));
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
+        "NotepadAvalonia", "Drafts"));
 
     public async Task<IReadOnlyList<DraftInfo>> DiscoverAsync() => await Task.Run(() =>
     {

@@ -12,4 +12,5 @@ public class SearchSettings
     public bool MatchCase { get; set; } = false;        // g417
     public bool UseRegex { get; set; } = false;         // Extension
     public bool WholeWord { get; set; } = false;        // Extension
+    public bool HighlightMatches { get; set; }
 }

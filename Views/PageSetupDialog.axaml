@@ -7,7 +7,7 @@
         SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner">
-  <StackPanel Margin="16" Spacing="12">
+  <StackPanel Margin="16" Spacing="12" UseLayoutRounding="True">
     <Grid ColumnDefinitions="*,235" ColumnSpacing="20">
       <StackPanel Spacing="7">
         <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
@@ -54,17 +54,19 @@
       <StackPanel Grid.Column="1" Spacing="8">
         <TextBlock Text="Layout Preview" FontWeight="SemiBold" />
         <local:PrintPagePreview x:Name="SheetPreview" Height="262" AutomationProperties.Name="Page preview" />
-        <TextBlock Text="&amp;f file, &amp;p page, &amp;d date, &amp;t time&#10;&amp;l left, &amp;c center, &amp;r right, &amp;&amp; ampersand"
+        <TextBlock Text="&amp;f file, &amp;p page, &amp;d date, &amp;t time&#10;&amp;l left, &amp;c center, &amp;r right&#10;&amp;&amp; ampersand"
                    Opacity="0.75" TextWrapping="Wrap" />
       </StackPanel>
     </Grid>
     <TextBlock x:Name="Problem" IsVisible="False" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-    <DockPanel LastChildFill="False">
-      <Button x:Name="PrinterButton" DockPanel.Dock="Left" Content="_Printer..." Click="OnPrinter" />
-      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
-        <Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" />
-        <Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Classes="dialog-actions" HorizontalAlignment="Left">
+        <Button x:Name="PrinterButton" Content="_Printer..." Click="OnPrinter" />
       </StackPanel>
-    </DockPanel>
+      <StackPanel Grid.Column="1" Classes="dialog-actions">
+        <Button Content="OK" Classes="accent" Click="OnOk" IsDefault="True" />
+        <Button Content="Cancel" Click="OnCancel" IsCancel="True" />
+      </StackPanel>
+    </Grid>
   </StackPanel>
 </Window>

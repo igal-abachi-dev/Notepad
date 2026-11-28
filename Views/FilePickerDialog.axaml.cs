@@ -2,7 +2,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
-using Avalonia.Layout;
 using Avalonia.VisualTree;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
@@ -11,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Enumeration;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,22 +26,27 @@ public partial class FilePickerDialog : Window
 
     private readonly bool _saving;
     private readonly string? _initialFolder;
+    private readonly string? _suggestedName;
     private readonly Stack<string> _history = new();
     private string? _folder;
+    private string? _wildcard;
     private CancellationTokenSource? _navigation;
     private bool _accepting;
     private bool _closed;
 
     public FilePickerDialog() : this(null, null, null) { }
 
-    internal FilePickerDialog(string? currentFile, string? recentFile, FileEncodingType? saveEncoding)
+    internal FilePickerDialog(string? currentFile, string? recentFile, FileEncodingType? saveEncoding, string? suggestedName = null)
     {
         InitializeComponent();
+        FolderBox.AddHandler(KeyDownEvent, OnFolderKeyDown, RoutingStrategies.Tunnel);
+        FolderBox.SizeChanged += (_, _) => PositionFolderSuggestions();
         _saving = saveEncoding.HasValue;
         _initialFolder = Path.GetDirectoryName(currentFile ?? recentFile);
         Title = _saving ? "Save As" : "Open";
         AcceptButton.Content = _saving ? "_Save" : "_Open";
-        if (_saving && currentFile != null) FileNameBox.Text = Path.GetFileName(currentFile);
+        _suggestedName = _saving && currentFile == null ? suggestedName : null;
+        if (_saving) FileNameBox.Text = currentFile != null ? Path.GetFileName(currentFile) : _suggestedName;
         FilterBox.SelectedIndex = 0;
         var encodings = EncodingDialog.CreateOptions(forOpening: !_saving);
         EncodingBox.ItemsSource = encodings;
@@ -53,6 +58,7 @@ public partial class FilePickerDialog : Window
         base.OnOpened(e);
         FileNameBox.Focus();
         FileNameBox.SelectAll();
+        if (_suggestedName != null) FileNameBox.SelectionEnd = Path.GetFileNameWithoutExtension(_suggestedName).Length;
         // Directory and drive probes can wait on a network location.
         Location[] locations;
         try { locations = await Task.Run(GetLocations); }
@@ -71,6 +77,7 @@ public partial class FilePickerDialog : Window
     protected override void OnClosed(EventArgs e)
     {
         _closed = true;
+        CloseFolderSuggestions();
         _navigation?.Cancel();
         base.OnClosed(e);
     }
@@ -88,27 +95,37 @@ public partial class FilePickerDialog : Window
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         Add("Downloads", Path.Combine(home, "Downloads"));
         Add("Home", home);
-        foreach (string drive in Environment.GetLogicalDrives()) locations.Add(new(drive, drive));
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (string drive in Environment.GetLogicalDrives()) locations.Add(new(drive, drive));
+        }
+        else
+            locations.Add(new("Filesystem", "/"));
         return locations.ToArray();
     }
 
     private async Task<bool> NavigateAsync(string path, bool remember = true, string? wildcard = null)
     {
+        CloseFolderSuggestions();
         _navigation?.Cancel();
         using var request = new CancellationTokenSource();
         _navigation = request;
         string pattern = wildcard ?? (FilterBox.SelectedIndex == 1 ? "*" : "*.txt");
+        bool showHidden = HiddenFilesBox.IsChecked == true;
+        var sort = _sort;
         Report("Loading folder…");
         AcceptButton.IsEnabled = false;
         try
         {
-            var files = await Task.Run(() => ReadEntries(path, pattern, request.Token));
+            var files = await Task.Run(() => SortEntries(ReadEntries(path, pattern, showHidden, request.Token), sort));
             if (_closed || request.IsCancellationRequested) return false;
             if (remember && _folder != null && !SettingsService.PathComparer.Equals(_folder, path))
                 _history.Push(_folder);
             _folder = path;
+            _wildcard = wildcard;
             FolderBox.Text = path;
             Entries.ItemsSource = files;
+            UpdateSortHeaders(sort);
             Report(files.Length == 0 ? "No matching files or folders." : "");
             return true;
         }
@@ -130,22 +147,32 @@ public partial class FilePickerDialog : Window
         }
     }
 
-    private static FilePickerEntry[] ReadEntries(string path, string pattern, CancellationToken cancellation)
+    private static FilePickerEntry[] ReadEntries(string path, string pattern, bool showHidden, CancellationToken cancellation)
     {
-        var options = new EnumerationOptions { AttributesToSkip = FileAttributes.Hidden | FileAttributes.System, IgnoreInaccessible = false };
+        var options = new EnumerationOptions { AttributesToSkip = 0, IgnoreInaccessible = true };
         var entries = new List<FilePickerEntry>();
-        string expression = FileSystemName.TranslateWin32Expression(pattern);
+        bool windows = OperatingSystem.IsWindows();
+        bool mac = OperatingSystem.IsMacOS();
+        string expression = windows ? FileSystemName.TranslateWin32Expression(pattern) :
+            mac ? pattern.Normalize(NormalizationForm.FormC) : pattern;
         foreach (var item in new DirectoryInfo(path).EnumerateFileSystemInfos("*", options))
         {
             cancellation.ThrowIfCancellationRequested();
-            bool folder = (item.Attributes & FileAttributes.Directory) != 0;
-            if (!folder && !FileSystemName.MatchesWin32Expression(expression, item.Name, ignoreCase: OperatingSystem.IsWindows()))
-                continue;
-            entries.Add(new(item.Name, item.FullName, folder, folder ? "Folder" : Path.GetExtension(item.Name),
-                item.LastWriteTime.ToString("g")));
+            try
+            {
+                var attributes = item.Attributes;
+                if (!showHidden && IsHidden(item.Name, attributes)) continue;
+                bool folder = (attributes & FileAttributes.Directory) != 0;
+                bool matches = folder || (windows
+                    ? FileSystemName.MatchesWin32Expression(expression, item.Name, ignoreCase: true)
+                    : FileSystemName.MatchesSimpleExpression(expression,
+                        mac ? item.Name.Normalize(NormalizationForm.FormC) : item.Name, ignoreCase: mac));
+                if (!matches) continue;
+                entries.Add(new(item.Name, item.FullName, folder, folder ? "Folder" : Path.GetExtension(item.Name), item.LastWriteTimeUtc));
+            }
+            catch (Exception ex) when (IsPathError(ex)) { }
         }
-        return entries.OrderByDescending(entry => entry.IsFolder)
-            .ThenBy(entry => entry.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+        return entries.ToArray();
     }
 
     private async void OnPlaceChanged(object? sender, SelectionChangedEventArgs e)
@@ -171,7 +198,8 @@ public partial class FilePickerDialog : Window
 
     private async void OnFolderKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Enter || string.IsNullOrWhiteSpace(FolderBox.Text)) return;
+        if (await HandleFolderSuggestionKeyAsync(e)) return;
+        if (e.Key != Key.Enter || string.IsNullOrEmpty(FolderBox.Text)) return;
         e.Handled = true;
         try { await NavigateAsync(ResolvePath(FolderBox.Text)); }
         catch (Exception ex) when (IsPathError(ex)) { Report(ex.Message); }
@@ -180,6 +208,21 @@ public partial class FilePickerDialog : Window
     private async void OnFilterChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_folder != null) await NavigateAsync(_folder, remember: false);
+    }
+
+    private async void OnHiddenFilesChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_folder != null) await NavigateAsync(_folder, remember: false, wildcard: _wildcard);
+    }
+
+    private void OnPickerKeyDown(object? sender, KeyEventArgs e)
+    {
+        bool toggle = OperatingSystem.IsMacOS()
+            ? e.Key == Key.OemPeriod && e.KeyModifiers == (KeyModifiers.Meta | KeyModifiers.Shift)
+            : e.Key == Key.H && e.KeyModifiers == KeyModifiers.Control;
+        if (!toggle) return;
+        HiddenFilesBox.IsChecked = HiddenFilesBox.IsChecked != true;
+        e.Handled = true;
     }
 
     private void OnEntryChanged(object? sender, SelectionChangedEventArgs e)
@@ -195,6 +238,12 @@ public partial class FilePickerDialog : Window
 
     private async void OnEntryKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.Key == Key.F2 && e.KeyModifiers == KeyModifiers.None && Entries.SelectedItem is FilePickerEntry entry)
+        {
+            e.Handled = true;
+            await RenameEntryAsync(entry);
+            return;
+        }
         if (e.Key != Key.Enter) return;
         e.Handled = true;
         await AcceptAsync(useSelection: true);
@@ -209,7 +258,7 @@ public partial class FilePickerDialog : Window
         try
         {
             string? name = useSelection && Entries.SelectedItem is FilePickerEntry entry ? entry.Path : FileNameBox.Text;
-            if (string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrEmpty(name) || OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(name))
             {
                 if (Entries.SelectedItem is FilePickerEntry { IsFolder: true } folder)
                     await NavigateAsync(folder.Path);
@@ -225,12 +274,13 @@ public partial class FilePickerDialog : Window
             }
 
             string filename = Path.GetFileName(path);
-            if (filename.Contains('*') || filename.Contains('?'))
+            if ((filename.Contains('*') || filename.Contains('?')) &&
+                (OperatingSystem.IsWindows() || !_saving && !await Task.Run(() => File.Exists(path))))
             {
                 await NavigateAsync(Path.GetDirectoryName(path)!, wildcard: filename);
                 return;
             }
-            if (filename.Length == 0 || filename.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            if (!DocumentPath.IsValidName(filename))
                 throw new IOException("Enter a valid file name.");
 
             bool useTextExtension = FilterBox.SelectedIndex == 0;
@@ -260,21 +310,21 @@ public partial class FilePickerDialog : Window
         if (useTextExtension && !Path.HasExtension(path) && !path.EndsWith('.'))
         {
             string withExtension = path + ".txt";
-            if (saving || !File.Exists(path) || File.Exists(withExtension)) path = withExtension;
+            if (!File.Exists(path)) path = withExtension;
         }
         if (!Directory.Exists(Path.GetDirectoryName(path)))
             throw new DirectoryNotFoundException("The destination folder was not found.");
         bool exists = File.Exists(path);
         if (!saving && !exists) throw new FileNotFoundException("The selected file was not found.");
         if (Directory.Exists(path)) throw new IOException("The name points to a folder.");
-        if (saving && exists && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+        if (saving && exists && FileService.IsReadOnlyFile(path))
             throw new IOException("The selected file is read-only.");
         return (path, exists);
     }
 
     private string ResolvePath(string name)
     {
-        string path = Environment.ExpandEnvironmentVariables(name.Trim().Trim('"'));
+        string path = OperatingSystem.IsWindows() ? Environment.ExpandEnvironmentVariables(name.Trim().Trim('"')) : name;
         return Path.GetFullPath(path, _folder ?? Environment.CurrentDirectory);
     }
 
@@ -282,31 +332,40 @@ public partial class FilePickerDialog : Window
     {
         if (_folder == null || _navigation != null) return;
         string parent = _folder;
-        var name = new TextBox { Watermark = "Folder name" };
-        var create = new Button { Content = "_Create", IsDefault = true, MinWidth = 76 };
-        var cancel = new Button { Content = "Cancel", IsCancel = true, MinWidth = 76 };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
-            Spacing = 8, Children = { create, cancel } };
-        var dialog = new Window
-        {
-            Title = "New Folder", Width = 340, SizeToContent = SizeToContent.Height, ShowInTaskbar = false,
-            CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new StackPanel { Margin = new Thickness(16), Spacing = 10, Children = { name, actions } }
-        };
-        dialog.Opened += (_, _) => name.Focus();
-        create.Click += (_, _) => dialog.Close(name.Text);
-        cancel.Click += (_, _) => dialog.Close();
-        if (await dialog.ShowDialog<string?>(this) is not { } input) return;
+        if (await AskForNameAsync("New Folder", "Folder name", "_Create") is not { } input) return;
         try
         {
-            string folder = input.Trim();
-            if (folder is "" or "." or ".." || folder.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            string folder = OperatingSystem.IsWindows() ? input.Trim() : input;
+            if (folder is "." or ".." || !DocumentPath.IsValidName(folder))
                 throw new IOException("Enter a valid folder name.");
             string path = Path.Combine(parent, folder);
             await Task.Run(() => Directory.CreateDirectory(path));
             await NavigateAsync(path);
         }
         catch (Exception ex) when (IsPathError(ex)) { if (!_closed) Report(ex.Message); }
+    }
+
+    private Task<string?> AskForNameAsync(string title, string watermark, string action, string? initial = null, int selectionLength = 0)
+    {
+        var name = new TextBox { Watermark = watermark, Text = initial };
+        var confirm = new Button { Content = action, IsDefault = true, Classes = { "accent" } };
+        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var actions = new StackPanel { Classes = { "dialog-actions" }, Children = { confirm, cancel } };
+        var dialog = new Window
+        {
+            Title = title, Width = 340, SizeToContent = SizeToContent.Height, ShowInTaskbar = false,
+            CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel { Margin = new Thickness(16), Spacing = 12, UseLayoutRounding = true, Children = { name, actions } }
+        };
+        dialog.Opened += (_, _) =>
+        {
+            name.Focus();
+            name.SelectionStart = 0;
+            name.SelectionEnd = selectionLength;
+        };
+        confirm.Click += (_, _) => dialog.Close(name.Text);
+        cancel.Click += (_, _) => dialog.Close();
+        return dialog.ShowDialog<string?>(this);
     }
 
     private static bool IsPathError(Exception ex) =>
@@ -321,4 +380,9 @@ public partial class FilePickerDialog : Window
     private void OnCancel(object? sender, RoutedEventArgs e) => Close();
 }
 
-internal sealed record FilePickerEntry(string Name, string Path, bool IsFolder, string Kind, string Modified);
+internal sealed record FilePickerEntry(string Name, string Path, bool IsFolder, string Kind, DateTime LastWriteTimeUtc)
+{
+    public string Modified => LastWriteTimeUtc.ToLocalTime().ToString("g");
+
+    public override string ToString() => Name;
+}

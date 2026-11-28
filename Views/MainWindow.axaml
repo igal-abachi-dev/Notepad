@@ -10,10 +10,16 @@
         MinWidth="320"
         MinHeight="220"
         DragDrop.AllowDrop="True">
+  <Window.Styles>
+    <Style Selector="Window.mica-chrome">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+  </Window.Styles>
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+N" Command="{Binding NewFileCommand}" />
     <KeyBinding Gesture="Ctrl+Shift+N" Command="{Binding NewWindowCommand}" />
     <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenFileCommand}" />
+    <KeyBinding Gesture="Ctrl+R" Command="{Binding ReloadFromDiskCommand}" />
     <KeyBinding Gesture="Ctrl+S" Command="{Binding SaveFileCommand}" />
     <KeyBinding Gesture="Ctrl+Shift+S" Command="{Binding SaveFileAsCommand}" />
     <KeyBinding Gesture="Ctrl+P" Command="{Binding PrintCommand}" />
@@ -28,7 +34,10 @@
     <KeyBinding Gesture="Shift+Insert" Command="{Binding PasteCommand}" />
     <KeyBinding Gesture="Ctrl+A" Command="{Binding SelectAllCommand}" />
     <KeyBinding Gesture="F5" Command="{Binding InsertDateTimeCommand}" />
-    <KeyBinding Gesture="Ctrl+E" Command="{Binding SearchWithBingCommand}" />
+    <KeyBinding Gesture="Ctrl+Shift+G" Command="{Binding InsertGuidCommand}" />
+    <KeyBinding Gesture="Ctrl+E" Command="{Binding OpenSelectionInBrowserCommand}" />
+    <KeyBinding Gesture="Ctrl+OemQuestion" Command="{Binding ToggleLineCommentCommand}" />
+    <KeyBinding Gesture="Ctrl+Shift+OemQuestion" Command="{Binding ToggleBlockCommentCommand}" />
     <KeyBinding Gesture="Ctrl+F" Command="{Binding ShowFindDialogCommand}" />
     <KeyBinding Gesture="Ctrl+H" Command="{Binding ShowReplaceDialogCommand}" />
     <KeyBinding Gesture="F3" Command="{Binding FindNextCommand}" />
@@ -44,18 +53,22 @@
     <KeyBinding Gesture="F1" Command="{Binding ViewHelpCommand}" />
   </Window.KeyBindings>
 
-  <DockPanel>
-    <Menu DockPanel.Dock="Top">
+  <DockPanel UseLayoutRounding="True">
+    <Menu x:Name="EditorMenu" DockPanel.Dock="Top" Padding="4,0"
+          BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,0,0,1">
       <MenuItem Header="_File">
         <MenuItem Header="_New" Command="{Binding NewFileCommand}" InputGesture="Ctrl+N" />
         <MenuItem Header="New _Window" Command="{Binding NewWindowCommand}" InputGesture="Ctrl+Shift+N" />
         <MenuItem Header="_Open..." Command="{Binding OpenFileCommand}" InputGesture="Ctrl+O" />
+        <MenuItem Header="_Reload from Disk" Command="{Binding ReloadFromDiskCommand}" InputGesture="Ctrl+R" IsEnabled="{Binding !Document.IsUntitled}" />
         <MenuItem Header="Recover _Drafts..." Command="{Binding RecoverDraftsCommand}" />
         <MenuItem Header="Open with _Encoding..." Command="{Binding OpenWithEncodingCommand}" />
         <MenuItem Header="Reopen with En_coding..." Command="{Binding ReopenWithEncodingCommand}" IsEnabled="{Binding !Document.IsUntitled}" />
+        <MenuItem Header="Open Containing _Folder" Command="{Binding OpenContainingFolderCommand}" IsEnabled="{Binding !Document.IsUntitled}" />
         <MenuItem x:Name="RecentMenu" Header="_Recent Files" />
         <MenuItem Header="_Save" Command="{Binding SaveFileCommand}" InputGesture="Ctrl+S" />
         <MenuItem Header="Save _As..." Command="{Binding SaveFileAsCommand}" InputGesture="Ctrl+Shift+S" />
+        <MenuItem Header="_Run Script" Command="{Binding RunScriptCommand}" IsVisible="{Binding CanRunScript}" />
         <MenuItem Header="_Default Encoding..." Command="{Binding ChangeDefaultEncodingCommand}"
                   AutomationProperties.AutomationId="DefaultEncodingMenu" />
         <Separator />
@@ -73,7 +86,7 @@
         <MenuItem Header="_Paste" Command="{Binding PasteCommand}" InputGesture="Ctrl+V" />
         <MenuItem Header="De_lete" Command="{Binding DeleteCommand}" InputGesture="Delete" />
         <Separator />
-        <MenuItem Header="Search with _Bing..." Command="{Binding SearchWithBingCommand}" InputGesture="Ctrl+E" />
+        <MenuItem Header="Search with _Google" Command="{Binding OpenSelectionInBrowserCommand}" InputGesture="Ctrl+E" />
         <MenuItem Header="_Find..." Command="{Binding ShowFindDialogCommand}" InputGesture="Ctrl+F" />
         <MenuItem Header="Find _Next" Command="{Binding FindNextCommand}" InputGesture="F3" />
         <MenuItem Header="Find Pre_vious" Command="{Binding FindPreviousCommand}" InputGesture="Shift+F3" />
@@ -82,10 +95,79 @@
         <Separator />
         <MenuItem Header="Select _All" Command="{Binding SelectAllCommand}" InputGesture="Ctrl+A" />
         <MenuItem Header="Time/_Date" Command="{Binding InsertDateTimeCommand}" InputGesture="F5" />
+        <MenuItem Header="_Insert GUID" Command="{Binding InsertGuidCommand}" InputGesture="Ctrl+Shift+G" />
+        <MenuItem Header="Replace NUL Characters with _Spaces" Command="{Binding ReplaceNulsWithSpacesCommand}" />
+        <MenuItem Header="Toggle _Line Comment" Command="{Binding ToggleLineCommentCommand}" InputGesture="Ctrl+OemQuestion" />
+        <MenuItem Header="Toggle _Block Comment" Command="{Binding ToggleBlockCommentCommand}" InputGesture="Ctrl+Shift+OemQuestion" />
+        <MenuItem Header="Change _Case" IsEnabled="{Binding HasTextSelection}">
+          <MenuItem Header="UPPERCASE" Command="{Binding ApplyTextToolCommand}" CommandParameter="UpperCase" />
+          <MenuItem Header="lowercase" Command="{Binding ApplyTextToolCommand}" CommandParameter="LowerCase" />
+          <MenuItem Header="Title Case" Command="{Binding ApplyTextToolCommand}" CommandParameter="TitleCase" />
+          <MenuItem Header="camelCase" Command="{Binding ApplyTextToolCommand}" CommandParameter="CamelCase" />
+        </MenuItem>
+        <Separator />
+        <MenuItem Header="Convert / _Encode">
+          <MenuItem Header="Base64">
+            <MenuItem Header="Encode" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64Encode" />
+            <MenuItem Header="Decode (strict)" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64Decode" />
+            <MenuItem Header="Encode MIME (76 columns)" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64MimeEncode" />
+            <MenuItem Header="Decode MIME" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64MimeDecode" />
+            <MenuItem Header="Encode Base64URL" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64UrlEncode" />
+            <MenuItem Header="Decode Base64URL" Command="{Binding ApplyTextToolCommand}" CommandParameter="Base64UrlDecode" />
+          </MenuItem>
+          <MenuItem Header="Quoted-Printable">
+            <MenuItem Header="Encode" Command="{Binding ApplyTextToolCommand}" CommandParameter="QuotedPrintableEncode" />
+            <MenuItem Header="Decode" Command="{Binding ApplyTextToolCommand}" CommandParameter="QuotedPrintableDecode" />
+          </MenuItem>
+          <MenuItem Header="URL Component">
+            <MenuItem Header="Encode" Command="{Binding ApplyTextToolCommand}" CommandParameter="UrlEncode" />
+            <MenuItem Header="Decode" Command="{Binding ApplyTextToolCommand}" CommandParameter="UrlDecode" />
+          </MenuItem>
+          <MenuItem Header="HTTP">
+            <MenuItem Header="Encode Form Value" Command="{Binding ApplyTextToolCommand}" CommandParameter="FormEncode" />
+            <MenuItem Header="Decode Form Value" Command="{Binding ApplyTextToolCommand}" CommandParameter="FormDecode" />
+            <MenuItem Header="Encode Basic Authorization" Command="{Binding ApplyTextToolCommand}" CommandParameter="BasicEncode" />
+            <MenuItem Header="Decode Basic Authorization" Command="{Binding ApplyTextToolCommand}" CommandParameter="BasicDecode" />
+          </MenuItem>
+          <MenuItem Header="JWT / JWE / JWK">
+            <MenuItem Header="Decode JWT (Inspect Only)" Command="{Binding ApplyTextToolCommand}" CommandParameter="JwtDecode" />
+            <MenuItem Header="Encode Unsigned JWT" Command="{Binding ApplyTextToolCommand}" CommandParameter="JwtEncode" />
+            <MenuItem Header="Inspect Compact JWE" Command="{Binding ApplyTextToolCommand}" CommandParameter="JweInspect" />
+            <MenuItem Header="Assemble Compact JWE" Command="{Binding ApplyTextToolCommand}" CommandParameter="JweAssemble" />
+            <MenuItem Header="Beautify JWK" Command="{Binding ApplyTextToolCommand}" CommandParameter="JwkBeautify" />
+            <MenuItem Header="Minify JWK" Command="{Binding ApplyTextToolCommand}" CommandParameter="JwkMinify" />
+          </MenuItem>
+        </MenuItem>
+        <MenuItem Header="For_mat Text">
+          <MenuItem Header="JSON">
+            <MenuItem Header="Beautify" Command="{Binding ApplyTextToolCommand}" CommandParameter="JsonBeautify" />
+            <MenuItem Header="Minify" Command="{Binding ApplyTextToolCommand}" CommandParameter="JsonMinify" />
+          </MenuItem>
+          <MenuItem Header="XML / XHTML / HTML5">
+            <MenuItem Header="Beautify XML / XHTML" Command="{Binding ApplyTextToolCommand}" CommandParameter="XmlBeautify" />
+            <MenuItem Header="Minify XML / XHTML" Command="{Binding ApplyTextToolCommand}" CommandParameter="XmlMinify" />
+            <Separator />
+            <MenuItem Header="Beautify HTML5" Command="{Binding ApplyTextToolCommand}" CommandParameter="HtmlBeautify" />
+            <MenuItem Header="Minify HTML5" Command="{Binding ApplyTextToolCommand}" CommandParameter="HtmlMinify" />
+          </MenuItem>
+          <MenuItem Header="CSS">
+            <MenuItem Header="Beautify" Command="{Binding ApplyTextToolCommand}" CommandParameter="CssBeautify" />
+            <MenuItem Header="Minify" Command="{Binding ApplyTextToolCommand}" CommandParameter="CssMinify" />
+          </MenuItem>
+          <MenuItem Header="JavaScript / TypeScript">
+            <MenuItem Header="Beautify JavaScript" Command="{Binding ApplyTextToolCommand}" CommandParameter="JsBeautify" />
+            <MenuItem Header="Minify JavaScript" Command="{Binding ApplyTextToolCommand}" CommandParameter="JsMinify" />
+            <Separator />
+            <MenuItem Header="Beautify TypeScript" Command="{Binding ApplyTextToolCommand}" CommandParameter="TsBeautify" />
+            <MenuItem Header="Minify TypeScript" Command="{Binding ApplyTextToolCommand}" CommandParameter="TsMinify" />
+          </MenuItem>
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="F_ormat">
         <MenuItem Header="_Word Wrap" Command="{Binding ToggleWordWrapCommand}" ToggleType="CheckBox"
-                  IsChecked="{Binding Settings.WordWrap, Mode=OneWay}" />
+                  IsChecked="{Binding EditorWordWrap, Mode=OneWay}" />
+        <MenuItem Header="Auto-_indent" Command="{Binding ToggleAutoIndentCommand}" ToggleType="CheckBox"
+                  IsChecked="{Binding Settings.AutoIndent, Mode=OneWay}" />
         <MenuItem Header="_Font..." Command="{Binding ChangeFontCommand}" />
         <MenuItem Header="_Line Endings">
           <MenuItem Header="Windows line endings only" Command="{Binding ToggleWindowsOnlyLineEndingsCommand}" ToggleType="CheckBox"
@@ -114,53 +196,146 @@
                   IsChecked="{Binding Settings.ShowStatusBar, Mode=OneWay}" />
         <MenuItem Header="_Line Numbers" Command="{Binding ToggleLineNumbersCommand}" ToggleType="CheckBox"
                   IsChecked="{Binding Settings.ShowLineNumbers, Mode=OneWay}" />
+        <MenuItem Header="Show _All Characters" Command="{Binding ToggleShowAllCharactersCommand}"
+                  ToggleType="CheckBox" IsChecked="{Binding Settings.ShowAllCharacters, Mode=OneWay}" />
+        <MenuItem Header="Inspect _Characters..." Command="{Binding InspectCharactersCommand}" />
+        <MenuItem Header="_Read-only Mode" Command="{Binding ToggleReadOnlyModeCommand}" ToggleType="CheckBox"
+                  IsChecked="{Binding IsReadOnlyMode, Mode=OneWay}" />
+        <MenuItem Header="_Tail File" Command="{Binding ToggleTailFileCommand}" ToggleType="CheckBox"
+                  IsEnabled="{Binding !Document.IsUntitled}" IsChecked="{Binding IsFollowingLog, Mode=OneWay}" />
+      </MenuItem>
+      <MenuItem Header="_Tools">
+        <MenuItem Header="_View File as Encoding" IsEnabled="{Binding !Document.IsUntitled}">
+          <MenuItem Header="Auto-detect" Command="{Binding ViewFileAsEncodingCommand}" />
+          <Separator />
+          <MenuItem Header="ANSI" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.ANSI}" />
+          <MenuItem Header="UTF-16 LE" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF16LE}" />
+          <MenuItem Header="UTF-16 BE" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF16BE}" />
+          <MenuItem Header="UTF-8 with BOM" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF8BOM}" />
+          <MenuItem Header="UTF-8" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF8}" />
+          <MenuItem Header="OEM 437 (DOS / NFO)" Command="{Binding ViewFileAsEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.OEM437}" />
+        </MenuItem>
+        <MenuItem Header="_Convert File Encoding">
+          <MenuItem Header="ANSI" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.ANSI}" />
+          <MenuItem Header="UTF-16 LE" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF16LE}" />
+          <MenuItem Header="UTF-16 BE" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF16BE}" />
+          <MenuItem Header="UTF-8 with BOM" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF8BOM}" />
+          <MenuItem Header="UTF-8" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.UTF8}" />
+          <MenuItem Header="OEM 437 (DOS / NFO)" Command="{Binding ConvertFileEncodingCommand}" CommandParameter="{x:Static models:FileEncodingType.OEM437}" />
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="_Help">
         <MenuItem Header="View _Help" Command="{Binding ViewHelpCommand}" InputGesture="F1" />
-        <MenuItem Header="Send _Feedback" Command="{Binding SendFeedbackCommand}" IsVisible="{Binding IsFeedbackAvailable}" />
-        <Separator />
         <MenuItem Header="_About Notepad" Command="{Binding ShowAboutCommand}" />
       </MenuItem>
     </Menu>
 
-    <TextBlock DockPanel.Dock="Bottom" IsVisible="{Binding DraftWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-               Text="{Binding DraftWarning}" Padding="8,4" AutomationProperties.LiveSetting="Polite" />
-    <TextBlock DockPanel.Dock="Bottom" IsVisible="{Binding SettingsWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-               Text="{Binding SettingsWarning}" Padding="8,4" AutomationProperties.LiveSetting="Polite" />
-    <Grid DockPanel.Dock="Bottom" IsVisible="{Binding Settings.ShowStatusBar}"
-          Height="24" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
-          ColumnDefinitions="*,Auto,Auto,Auto,Auto">
-      <TextBlock Text="{Binding StatusText}" Margin="8,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-      <TextBlock Grid.Column="1" Text="{Binding Settings.ZoomLevel, StringFormat={}{0}%}" VerticalAlignment="Center" Margin="8,0" />
-      <TextBlock Grid.Column="2" Text="{Binding EncodingText}" VerticalAlignment="Center" Margin="8,0" />
-      <Button x:Name="LineEndingButton" Grid.Column="3" Content="{Binding LineEndingText}" VerticalAlignment="Stretch" Padding="8,0"
-              Background="Transparent" BorderThickness="0" ToolTip.Tip="Convert line endings"
-              AutomationProperties.Name="Convert line endings">
-        <Button.Flyout>
-          <MenuFlyout>
-            <MenuItem Header="Windows (CRLF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CRLF}" />
-            <MenuItem Header="Unix (LF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.LF}" />
-            <MenuItem Header="Macintosh (CR)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CR}" />
-          </MenuFlyout>
-        </Button.Flyout>
-      </Button>
-      <TextBlock x:Name="OvertypeIndicator" Grid.Column="4" Text="OVR" IsVisible="{Binding #Editor.OvertypeMode}" VerticalAlignment="Center" Margin="8,0"
-                 AutomationProperties.Name="Overtype mode" />
-    </Grid>
+    <Border DockPanel.Dock="Bottom" IsVisible="{Binding Settings.ShowStatusBar}"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,1,0,0">
+      <Grid MinHeight="27" ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto">
+        <Grid.Styles>
+          <Style Selector="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+          </Style>
+          <Style Selector="Button.status-action">
+            <Setter Property="VerticalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+          </Style>
+        </Grid.Styles>
+        <TextBlock Text="{Binding StatusText}" Margin="8,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <TextBlock Grid.Column="1" Text="{Binding Settings.ZoomLevel, StringFormat={}{0}%}" VerticalAlignment="Center" Margin="8,0" />
+        <TextBlock Grid.Column="2" Text="{Binding EncodingText}" VerticalAlignment="Center" Margin="8,0" />
+        <Button x:Name="LineEndingButton" Grid.Column="3" Classes="status-action" Content="{Binding LineEndingText}"
+                ToolTip.Tip="Convert line endings"
+                AutomationProperties.Name="Convert line endings">
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="Windows (CRLF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CRLF}" />
+              <MenuItem Header="Unix (LF)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.LF}" />
+              <MenuItem Header="Macintosh (CR)" Command="{Binding ConvertLineEndingsCommand}" CommandParameter="{x:Static models:LineEndingStyle.CR}" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+        <Button x:Name="LanguageButton" Grid.Column="4" Classes="status-action" Content="{Binding LanguageLabel}"
+                ToolTip.Tip="Change syntax language" AutomationProperties.Name="{Binding LanguageLabel, StringFormat='Syntax language: {0}'}">
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="{Binding AutomaticLanguageLabel}" Command="{Binding SetLanguageCommand}" />
+              <Separator />
+              <MenuItem Header="Plain Text" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Plain}" />
+              <MenuItem Header="C#" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.CSharp}" />
+              <MenuItem Header="HTML" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Html}" />
+              <MenuItem Header="JavaScript" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.JavaScript}" />
+              <MenuItem Header="PowerShell" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.PowerShell}" />
+              <MenuItem Header="Batch" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Batch}" />
+              <MenuItem Header="JSON" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Json}" />
+              <MenuItem Header="Python" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Python}" />
+              <MenuItem Header="SQL" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Sql}" />
+              <MenuItem Header="XML" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Xml}" />
+              <MenuItem Header="More Code Languages">
+                <MenuItem Header="TypeScript" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.TypeScript}" />
+                <MenuItem Header="Go" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Go}" />
+                <MenuItem Header="C" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.C}" />
+                <MenuItem Header="C++" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Cpp}" />
+                <MenuItem Header="Rust" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Rust}" />
+                <MenuItem Header="Java" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Java}" />
+                <MenuItem Header="Kotlin" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Kotlin}" />
+                <MenuItem Header="Elixir" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Elixir}" />
+              </MenuItem>
+              <MenuItem Header="Config and Logs">
+                <MenuItem Header="INI" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Ini}" />
+                <MenuItem Header="TOML" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Toml}" />
+                <MenuItem Header="YAML" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Yaml}" />
+                <MenuItem Header="Structured Log" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Log}" />
+              </MenuItem>
+              <MenuItem Header="Markup and Styles">
+                <MenuItem Header="Markdown" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Markdown}" />
+                <MenuItem Header="CSS" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Css}" />
+                <MenuItem Header="TeX" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.TeX}" />
+              </MenuItem>
+              <MenuItem Header="Shell and Build Files">
+                <MenuItem Header="Shell" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Shell}" />
+                <MenuItem Header="Dockerfile" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.Dockerfile}" />
+                <MenuItem Header="CMake" Command="{Binding SetLanguageCommand}" CommandParameter="{x:Static neo:SyntaxLanguage.CMake}" />
+              </MenuItem>
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+        <TextBlock x:Name="OvertypeIndicator" Grid.Column="5" Text="OVR" IsVisible="{Binding #Editor.OvertypeMode}" VerticalAlignment="Center" Margin="8,0"
+                   AutomationProperties.Name="Overtype mode" />
+      </Grid>
+    </Border>
 
-    <Grid x:Name="EditorSurface">
+    <StackPanel DockPanel.Dock="Bottom" Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
+      <TextBlock IsVisible="{Binding DraftWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                 Text="{Binding DraftWarning}" TextWrapping="Wrap" Padding="8,4" AutomationProperties.LiveSetting="Polite" />
+      <TextBlock IsVisible="{Binding SettingsWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                 Text="{Binding SettingsWarning}" TextWrapping="Wrap" Padding="8,4" AutomationProperties.LiveSetting="Polite" />
+    </StackPanel>
+
+    <Grid x:Name="EditorSurface" Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
     <ScrollViewer Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
       <neo:NeoEditor x:Name="Editor" DragDrop.AllowDrop="True"
                      AutomationProperties.Name="Document text"
                      Language="{Binding CurrentLanguage}"
-                     FontFamily="{Binding Settings.FontFamily}"
+                     FontFamily="{Binding EditorFontFamily}"
+                     EnableFontLigatures="{Binding Settings.EnableFontLigatures}"
+                     AutoIndent="{Binding Settings.AutoIndent}"
                      FontSize="{Binding EditorFontSize}"
                      FontWeight="{Binding EditorFontWeight}"
                      FontStyle="{Binding EditorFontStyle}"
-                     WordWrap="{Binding Settings.WordWrap}"
+                     WordWrap="{Binding EditorWordWrap}"
+                     IsReadOnly="{Binding IsEditorReadOnly}"
                      ShowLineNumbers="{Binding Settings.ShowLineNumbers}"
                      RightToLeftReadingOrder="{Binding Settings.RightToLeft}"
                      ShowUnicodeControls="{Binding Settings.ShowUnicodeControls}"
+                     ShowAllCharacters="{Binding Settings.ShowAllCharacters}"
                      Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}">
         <neo:NeoEditor.ContextMenu>
@@ -174,6 +349,22 @@
             <MenuItem Header="De_lete" Command="{Binding DeleteCommand}" />
             <Separator />
             <MenuItem Header="Select _All" Command="{Binding SelectAllCommand}" />
+            <Separator IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="Copy to _New Window" Command="{Binding CopySelectionToNewWindowCommand}"
+                      IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="Inspect _Characters..." Command="{Binding InspectCharactersCommand}"
+                      IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="Search with _Google" Command="{Binding OpenSelectionInBrowserCommand}"
+                      IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="_Look Up Term with Google" Command="{Binding OpenSelectionInBrowserCommand}" CommandParameter="Define"
+                      IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="_Translate with Google" Command="{Binding OpenSelectionInBrowserCommand}" CommandParameter="Translate"
+                      IsVisible="{Binding HasTextSelection}" />
+            <MenuItem Header="Google _AI Mode" IsVisible="{Binding HasTextSelection}">
+              <MenuItem Header="_Explain Error or Code" Command="{Binding OpenSelectionInBrowserCommand}" CommandParameter="Explain" />
+              <MenuItem Header="_Summarize Selection" Command="{Binding OpenSelectionInBrowserCommand}" CommandParameter="Summarize" />
+              <MenuItem Header="_Rewrite Selection" Command="{Binding OpenSelectionInBrowserCommand}" CommandParameter="Rewrite" />
+            </MenuItem>
             <Separator />
             <MenuItem Header="_Right-to-left reading order" Command="{Binding ToggleRightToLeftCommand}"
                       ToggleType="CheckBox" IsChecked="{Binding Settings.RightToLeft, Mode=OneWay}" />

@@ -19,6 +19,40 @@ namespace Notepad.Tests;
 
 public class DraftRecoveryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Store_PreservesTheSaveTargetAndStillReadsVersionsWithoutOne(bool trackTarget)
+    {
+        using var folder = new DraftFolder();
+        string file = Path.Combine(folder.Path, "notes.txt");
+        await File.WriteAllTextAsync(file, "before");
+        var opened = await new FileService().ReadDocumentAsync(file);
+        var version = trackTarget ? opened.Version : opened.Version with { ResolvedPath = null };
+        using var lease = new DraftStore(folder.Path).Create();
+        await lease.WriteAsync(Snapshot("edit") with { Path = file, SavedFileVersion = version }, 1);
+
+        var recovered = Assert.IsType<DraftSnapshot>(lease.Read());
+        Assert.Equal("edit", recovered.Content);
+        Assert.Equal(version, recovered.SavedFileVersion);
+        Assert.Equal(version.ResolvedPath, recovered.SavedFileVersion!.ResolvedPath);
+    }
+
+    [Fact]
+    public async Task Store_RetainsTheSuggestedExtensionForACopiedSelection()
+    {
+        using var folder = new DraftFolder();
+        var store = new DraftStore(folder.Path);
+        var lease = store.Create();
+        await lease.WriteAsync(Snapshot("Get-Date\r\n") with { SuggestedExtension = ".ps1" }, 0);
+        await lease.ReleaseAsync();
+        using var claimed = Assert.IsType<DraftLease>(store.TryClaim(lease.Id));
+        var recovered = Assert.IsType<DraftSnapshot>(claimed.Read());
+        Assert.Equal(".ps1", recovered.SuggestedExtension);
+        Assert.Null(recovered.Path);
+        Assert.Equal("Get-Date\r\n", recovered.Content);
+    }
+
     [Fact]
     public async Task Store_RetainsMultipleDraftsAndRefusesToClaimAnActiveOne()
     {

@@ -2,6 +2,7 @@
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
@@ -48,6 +49,13 @@ public partial class App : Application
                     main.Opened += async (_, _) => await viewModel.OpenStartupDraftAsync(draft);
                 else if (startup.Path is { } path)
                     main.Opened += async (_, _) => await viewModel.OpenStartupFileAsync(path, startup.Encoding, startup.Print);
+                if (OperatingSystem.IsMacOS() && TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activation)
+                    activation.Activated += (_, eventArgs) =>
+                    {
+                        if (eventArgs is FileActivatedEventArgs files &&
+                            files.Files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path != null) is { } localPath)
+                            Dispatcher.UIThread.Post(() => _ = viewModel.OpenFileAsync(localPath), DispatcherPriority.Loaded);
+                    };
             }
         }
         base.OnFrameworkInitializationCompleted();
@@ -64,9 +72,10 @@ public partial class App : Application
         bool options = true;
         foreach (string arg in arguments)
         {
+            if (string.IsNullOrEmpty(arg) || OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(arg)) continue;
             if (!options)
             {
-                if (!string.IsNullOrWhiteSpace(arg)) path ??= arg;
+                path ??= arg;
                 continue;
             }
             switch (arg.ToUpperInvariant())
@@ -76,7 +85,7 @@ public partial class App : Application
                 case "/W": encoding = FileEncodingType.UTF16LE; break;
                 case "/P": print = true; break;
                 default:
-                    if (!string.IsNullOrWhiteSpace(arg)) path ??= arg;
+                    path ??= arg;
                     break;
             }
         }

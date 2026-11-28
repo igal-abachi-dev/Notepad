@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
+using NotepadAvalonia.Services.Tools;
 using NotepadAvalonia.Views;
 using System;
 using System.Diagnostics;
@@ -52,7 +53,10 @@ public partial class MainWindowViewModel
         if (!force && document.DraftVersion == version) return Task.CompletedTask;
         var snapshot = new DraftSnapshot(editor.GetText(), document.IsUntitled ? null : document.FilePath,
             document.SaveEncodingType, document.LineEnding, editor.SelectionAnchor, editor.CaretOffset,
-            document.SavedFileVersion, _timeProvider.GetUtcNow());
+            document.SavedFileVersion, _timeProvider.GetUtcNow())
+        {
+            SuggestedExtension = document.IsUntitled ? document.SuggestedExtension : null
+        };
         return lease.WriteAsync(snapshot, ++document.DraftSequence);
     }
 
@@ -99,6 +103,7 @@ public partial class MainWindowViewModel
     internal void ReleaseAfterWindowClosed()
     {
         _draftTimer?.Stop();
+        StopSearchPreview();
         _ = ReleaseDocumentDraftAsync(Document, discard: !Document.IsModified);
     }
 
@@ -151,7 +156,17 @@ public partial class MainWindowViewModel
         bool accepted = false;
         try
         {
-            var snapshot = await Task.Run(lease.Read);
+            var (snapshot, readOnly) = await Task.Run(() =>
+            {
+                var recovered = lease.Read();
+                bool readOnly = false;
+                if (recovered is { Path: { } path, SavedFileVersion: not null })
+                {
+                    try { readOnly = FileService.IsReadOnlyFile(path); }
+                    catch (Exception ex) when (IsFileError(ex)) { }
+                }
+                return (recovered, readOnly);
+            });
             if (snapshot == null) return false;
 
             // Typing during the disk read must also leave the current document alone.
@@ -161,7 +176,7 @@ public partial class MainWindowViewModel
                 await lease.ReleaseAsync();
                 return await LaunchNewProcessAsync("--recover-draft", id.ToString("N"));
             }
-            ApplyDraft(snapshot, lease);
+            ApplyDraft(snapshot, lease, readOnly);
             accepted = true;
             return true;
         }
@@ -186,7 +201,7 @@ public partial class MainWindowViewModel
 
     private DraftSnapshot? _pendingDraftSelection;
 
-    private void ApplyDraft(DraftSnapshot snapshot, DraftLease lease)
+    private void ApplyDraft(DraftSnapshot snapshot, DraftLease lease, bool readOnly)
     {
         _loadRequest++;
         var previous = Document;
@@ -196,15 +211,17 @@ public partial class MainWindowViewModel
             FilePath = named ? snapshot.Path! : "",
             IsUntitled = !named,
             IsModified = true,
+            IsReadOnlyFile = readOnly,
             Encoding = _fileService.GetEncoding(snapshot.Encoding),
             EncodingType = snapshot.Encoding,
             SaveEncodingType = snapshot.Encoding,
             LineEnding = snapshot.LineEnding,
             SavedFileVersion = snapshot.SavedFileVersion,
+            SuggestedExtension = !named && FencedSelection.IsSuggestedExtension(snapshot.SuggestedExtension)
+                ? snapshot.SuggestedExtension : null,
             Draft = lease
         };
         _pendingDraftSelection = snapshot;
-        CurrentLanguage = named ? SyntaxMatcher.DetectLanguage(snapshot.Path!) : SyntaxLanguage.Plain;
         ResetEditor(snapshot.Content);
         UpdateEncodingDisplay();
         UpdateStatus();

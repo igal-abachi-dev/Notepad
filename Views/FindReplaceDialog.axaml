@@ -3,7 +3,7 @@
         xmlns:vm="using:NotepadAvalonia.ViewModels"
         x:Class="NotepadAvalonia.Views.FindReplaceDialog"
         x:DataType="vm:FindReplaceViewModel"
-        Width="445"
+        Width="460"
         SizeToContent="Height"
         ShowInTaskbar="False"
         CanResize="False"
@@ -13,15 +13,15 @@
     <KeyBinding Gesture="F3" Command="{Binding RepeatDownCommand}" />
     <KeyBinding Gesture="Shift+F3" Command="{Binding RepeatUpCommand}" />
   </Window.KeyBindings>
-  <StackPanel Margin="12" Spacing="10">
-    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" Margin="0,0,0,6">
-      <Label Content="_Find what:" Target="{Binding #FindTextBox}" Margin="0,0,10,6" VerticalAlignment="Center" />
+  <StackPanel Margin="16" Spacing="12" UseLayoutRounding="True">
+    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="8">
+      <Label Content="_Find what:" Target="{Binding #FindTextBox}" Padding="0" VerticalAlignment="Center" />
       <TextBox x:Name="FindTextBox"
                Grid.Column="1"
                Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"
                MinWidth="220" AutomationProperties.Name="Find what" />
 
-      <Label Grid.Row="1" Content="Replace _with:" Target="{Binding #ReplaceTextBox}" Margin="0,0,10,0" VerticalAlignment="Center"
+      <Label Grid.Row="1" Content="Replace _with:" Target="{Binding #ReplaceTextBox}" Padding="0" VerticalAlignment="Center"
                  IsVisible="{Binding IsReplaceMode}" />
       <TextBox x:Name="ReplaceTextBox" Grid.Row="1"
                Grid.Column="1"
@@ -33,22 +33,27 @@
       <StackPanel>
         <CheckBox Content="_Match case" IsChecked="{Binding MatchCase}" />
         <CheckBox Content="Wrap _around" IsChecked="{Binding WrapAround}" />
-        <CheckBox Content="Use rege_x" IsChecked="{Binding UseRegex}" />
+        <CheckBox Content="Use rege_x" IsChecked="{Binding UseRegex}"
+                  ToolTip.Tip="Use \r, \n, or \r\n in patterns and replacements. Use \\ for a literal backslash." />
       </StackPanel>
       <StackPanel>
-        <CheckBox Content="Search _up" IsChecked="{Binding SearchUp}" IsVisible="{Binding IsFindMode}" />
         <CheckBox Content="_Whole word" IsChecked="{Binding WholeWord}" />
+        <CheckBox x:Name="HighlightMatchesBox" Content="High_light matches" IsChecked="{Binding HighlightMatches}" />
       </StackPanel>
     </StackPanel>
 
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Content="_Find Next" Command="{Binding FindNextCommand}" MinWidth="90" IsDefault="True" />
-      <Button Content="_Replace" Command="{Binding ReplaceCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
-      <Button Content="Replace _All" Command="{Binding ReplaceAllCommand}" IsVisible="{Binding IsReplaceMode}" MinWidth="90" />
+    <TextBlock x:Name="SearchFeedback" Text="{Binding SearchFeedback}" MinHeight="17" MaxLines="2"
+               TextWrapping="Wrap" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
+
+    <StackPanel Classes="dialog-actions">
+      <Button x:Name="FindPreviousButton" Content="Find _Previous" Command="{Binding FindPreviousCommand}"
+              IsVisible="{Binding IsFindMode}" />
+      <Button Content="_Find Next" Classes="accent" Command="{Binding FindNextCommand}" IsDefault="True" />
+      <Button Content="_Replace" Command="{Binding ReplaceCommand}" IsVisible="{Binding IsReplaceMode}" />
+      <Button Content="Replace _All" Command="{Binding ReplaceAllCommand}" IsVisible="{Binding IsReplaceMode}" />
       <Button Content="Cancel" IsCancel="True"
               Command="{Binding CloseCommand}"
-              CommandParameter="{Binding $parent[Window]}"
-              MinWidth="90" />
+              CommandParameter="{Binding $parent[Window]}" />
     </StackPanel>
   </StackPanel>
 </Window>

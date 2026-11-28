@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -11,6 +12,165 @@ namespace Notepad.Tests;
 
 public class FileServiceTests
 {
+    [Fact]
+    public void LargeFilePolicy_WarnsAbove200MiBAndRejectsAt1GiB()
+    {
+        Assert.False(FileService.RequiresLargeFileConfirmation(200L * 1024 * 1024));
+        Assert.True(FileService.RequiresLargeFileConfirmation(200L * 1024 * 1024 + 1));
+        Assert.True(FileService.RequiresLargeFileConfirmation(1024L * 1024 * 1024 - 1));
+        Assert.Throws<IOException>(() => FileService.RequiresLargeFileConfirmation(1024L * 1024 * 1024));
+    }
+
+    [Fact]
+    public async Task Open_DecliningALargeFileSkipsDecoding()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+        using var file = new TemporaryFile();
+        const long length = 201L * 1024 * 1024;
+        using (var stream = File.Create(file.Path))
+            stream.SetLength(length);
+        bool prompted = false;
+        var result = await new FileService().ReadDocumentForEditorAsync(file.Path, requestedEncoding: null,
+            windowsOnly: false, size =>
+            {
+                Assert.Equal(length, size);
+                prompted = true;
+                return Task.FromResult(false);
+            });
+        Assert.True(prompted);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task Save_WhenFileBecomesReadOnlyAfterOpen_PreservesTheOriginal()
+    {
+        using var file = new TemporaryFile();
+        var service = new FileService();
+        await File.WriteAllTextAsync(file.Path, "original");
+        var initial = await service.ReadDocumentAsync(file.Path);
+        Assert.False(initial.IsReadOnly);
+        var attributes = File.GetAttributes(file.Path);
+        File.SetAttributes(file.Path, attributes | FileAttributes.ReadOnly);
+        try
+        {
+            Assert.True((await service.ReadDocumentAsync(file.Path)).IsReadOnly);
+            await Assert.ThrowsAsync<ReadOnlyFileException>(() =>
+                service.CommitFileAsync(file.Path, "staged", FileEncodingType.UTF8, LineEndingStyle.LF, initial.Version));
+            Assert.Equal("original", await File.ReadAllTextAsync(file.Path));
+            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-*.tmp"));
+        }
+        finally { File.SetAttributes(file.Path, attributes); }
+
+        await service.CommitFileAsync(file.Path, "allowed", FileEncodingType.UTF8, LineEndingStyle.LF, initial.Version);
+        Assert.Equal("allowed", await File.ReadAllTextAsync(file.Path));
+    }
+
+    [Fact]
+    public async Task Save_UnixReadOnlySymlinkTargetIsProtected()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
+        using var file = new TemporaryFile();
+        string link = Path.Combine(Path.GetDirectoryName(file.Path)!, "link.txt");
+        await File.WriteAllTextAsync(file.Path, "original");
+        File.SetUnixFileMode(file.Path, UnixFileMode.UserRead);
+        File.CreateSymbolicLink(link, Path.GetFileName(file.Path));
+        var service = new FileService();
+
+        var original = await service.ReadDocumentAsync(link);
+        Assert.True(original.IsReadOnly);
+        Assert.True(FileService.IsReadOnlyFile(link));
+        await Assert.ThrowsAsync<ReadOnlyFileException>(() =>
+            service.CommitFileAsync(link, "new", FileEncodingType.UTF8, LineEndingStyle.LF, original.Version));
+        Assert.Equal(Path.GetFileName(file.Path), new FileInfo(link).LinkTarget);
+        Assert.Equal("original", await File.ReadAllTextAsync(file.Path));
+        Assert.Equal(UnixFileMode.UserRead, File.GetUnixFileMode(file.Path));
+    }
+
+    [Fact]
+    public async Task Save_UnixPathsKeepLiteralCharactersAndDistinctCase()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var file = new TemporaryFile();
+        string folder = Path.GetDirectoryName(file.Path)!;
+        string first = Path.Combine(folder, @"Log_12:30\notes.txt ");
+        string second = Path.Combine(folder, @"log_12:30\notes.txt ");
+        var service = new FileService();
+        await service.SaveFileAsync(first, "first", FileEncodingType.UTF8, LineEndingStyle.LF);
+        await service.SaveFileAsync(second, "second", FileEncodingType.UTF8, LineEndingStyle.LF);
+        Assert.Equal("first", (await service.ReadDocumentAsync(first)).Content);
+        Assert.Equal("second", (await service.ReadDocumentAsync(second)).Content);
+        Assert.Equal((UnixFileMode)0, File.GetUnixFileMode(first) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite));
+    }
+
+    [Fact]
+    public async Task Save_UnixSymbolicLinkUpdatesTargetAndKeepsItsMode()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
+        using var file = new TemporaryFile();
+        string link = Path.Combine(Path.GetDirectoryName(file.Path)!, "link.txt");
+        const UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        await File.WriteAllTextAsync(file.Path, "old");
+        File.SetUnixFileMode(file.Path, mode);
+        File.CreateSymbolicLink(link, Path.GetFileName(file.Path));
+        var service = new FileService();
+        var original = await service.ReadDocumentAsync(link);
+
+        await service.CommitFileAsync(link, "new", FileEncodingType.UTF8, LineEndingStyle.LF, original.Version);
+
+        Assert.Equal(Path.GetFileName(file.Path), new FileInfo(link).LinkTarget);
+        Assert.Equal("new", await File.ReadAllTextAsync(file.Path));
+        Assert.Equal(mode, File.GetUnixFileMode(file.Path));
+    }
+
+    [Fact]
+    public async Task Save_UnixDanglingAndCyclicSymlinksStayIntact()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
+        using var file = new TemporaryFile();
+        string folder = Path.GetDirectoryName(file.Path)!;
+        string dangling = Path.Combine(folder, "dangling.txt");
+        string cycle = Path.Combine(folder, "cycle.txt");
+        File.CreateSymbolicLink(dangling, Path.GetFileName(file.Path));
+        File.CreateSymbolicLink(cycle, Path.GetFileName(cycle));
+        var service = new FileService();
+
+        foreach (string link in new[] { dangling, cycle })
+            await Assert.ThrowsAnyAsync<IOException>(() =>
+                service.SaveFileAsync(link, "new", FileEncodingType.UTF8, LineEndingStyle.LF));
+
+        Assert.Equal(Path.GetFileName(file.Path), new FileInfo(dangling).LinkTarget);
+        Assert.Equal(Path.GetFileName(cycle), new FileInfo(cycle).LinkTarget);
+        Assert.False(File.Exists(file.Path));
+    }
+
+    [Theory]
+    [InlineData("con.txt")]
+    [InlineData("LPT\u00B2.txt")]
+    [InlineData("fixture.txt:Zone.Identifier")]
+    [InlineData(@"\\.\NUL")]
+    [InlineData(@"\\?\GLOBALROOT\Device\Null")]
+    public void WindowsDocumentPath_RejectsDevicePathsAndStreams(string path)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Assert.Throws<IOException>(() => DocumentPath.GetFullPath(path));
+    }
+
+    [Fact]
+    public async Task WindowsSaveAndOpen_HandlePathsLongerThanMaxPath()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var file = new TemporaryFile();
+        string directory = Path.Combine(Path.GetDirectoryName(file.Path)!, new string('a', 110), new string('b', 110));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, new string('c', 40) + ".txt");
+        Assert.True(path.Length > 260);
+        var service = new FileService();
+        await service.SaveFileAsync(path, "first", FileEncodingType.UTF8, LineEndingStyle.CRLF);
+        var original = await service.ReadDocumentAsync(path);
+        await service.CommitFileAsync(path, "second", FileEncodingType.UTF8, LineEndingStyle.CRLF, original.Version);
+        Assert.Equal("second", (await service.ReadDocumentAsync(path)).Content);
+    }
+
     [Fact]
     public async Task Open_WindowsStyleSlashesAndASpaceInTheName_ReadTheExistingFile()
     {
@@ -76,7 +236,10 @@ public class FileServiceTests
         var encoding = service.GetEncoding(FileEncodingType.ANSI);
         Assert.Equal(OperatingSystem.IsWindows() ? Encoding.GetEncoding(0).CodePage : 1252, encoding.CodePage);
         if (encoding.CodePage == 1252)
+        {
             Assert.Equal("café", encoding.GetString([0x63, 0x61, 0x66, 0xe9]));
+            Assert.Throws<EncoderFallbackException>(() => encoding.GetBytes("\uFF21"));
+        }
     }
 
     [Fact]
@@ -210,6 +373,91 @@ public class FileServiceTests
     }
 
     [Fact]
+    public async Task GuardedSave_RejectsRetargetedDirectoryAliasWithIdenticalContents()
+    {
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
+        using var file = new TemporaryFile();
+        string folder = Path.GetDirectoryName(file.Path)!;
+        string first = Directory.CreateDirectory(Path.Combine(folder, "first")).FullName;
+        string second = Directory.CreateDirectory(Path.Combine(folder, "second")).FullName;
+        string alias = Path.Combine(folder, "alias");
+        string openedPath = Path.Combine(alias, "file.txt");
+        string firstFile = Path.Combine(first, "file.txt");
+        string secondFile = Path.Combine(second, "file.txt");
+        await File.WriteAllTextAsync(firstFile, "before");
+        var service = new FileService();
+        try
+        {
+            CreateDirectoryAlias(alias, first);
+            var opened = await service.ReadDocumentAsync(openedPath);
+            var saved = await service.CommitFileAsync(openedPath, "same bytes", opened.EncodingType, opened.LineEnding, opened.Version);
+            Assert.Equal("same bytes", await File.ReadAllTextAsync(firstFile));
+            Assert.NotNull(saved.ResolvedPath);
+            Assert.Equal(opened.Version.ResolvedPath, saved.ResolvedPath);
+
+            await File.WriteAllTextAsync(secondFile, "same bytes");
+            Directory.Delete(alias);
+            CreateDirectoryAlias(alias, second);
+            await Assert.ThrowsAsync<FileChangedException>(() =>
+                service.CommitFileAsync(openedPath, "edit", opened.EncodingType, opened.LineEnding, saved));
+            Assert.Equal("same bytes", await File.ReadAllTextAsync(firstFile));
+            Assert.Equal("same bytes", await File.ReadAllTextAsync(secondFile));
+            Assert.Empty(Directory.GetFiles(second, "*.tmp"));
+        }
+        finally
+        {
+            if (Directory.Exists(alias)) Directory.Delete(alias);
+        }
+    }
+
+    [Fact]
+    public async Task GuardedSave_RejectsRetargetedFileSymlinkAndProtectsLegacyVersions()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
+        using var file = new TemporaryFile();
+        string folder = Path.GetDirectoryName(file.Path)!;
+        string other = Path.Combine(folder, "second.txt");
+        string link = Path.Combine(folder, "link.txt");
+        await File.WriteAllTextAsync(file.Path, "same bytes");
+        await File.WriteAllTextAsync(other, "same bytes");
+        File.CreateSymbolicLink(link, Path.GetFileName(file.Path));
+        var service = new FileService();
+        var opened = await service.ReadDocumentAsync(link);
+        File.Delete(link);
+        File.CreateSymbolicLink(link, Path.GetFileName(other));
+
+        await Assert.ThrowsAsync<FileChangedException>(() =>
+            service.CommitFileAsync(link, "edit", opened.EncodingType, opened.LineEnding, opened.Version));
+        var legacy = opened.Version with { ResolvedPath = null };
+        await Assert.ThrowsAsync<FileChangedException>(() =>
+            service.CommitFileAsync(link, "edit", opened.EncodingType, opened.LineEnding, legacy));
+        Assert.Equal("same bytes", await File.ReadAllTextAsync(file.Path));
+        Assert.Equal("same bytes", await File.ReadAllTextAsync(other));
+        Assert.Equal(Path.GetFileName(other), new FileInfo(link).LinkTarget);
+
+        // Legacy drafts for direct paths can still save when the contents agree.
+        string directPath = opened.Version.ResolvedPath!;
+        await service.CommitFileAsync(directPath, "edit", opened.EncodingType, opened.LineEnding, legacy);
+        Assert.Equal("edit", await File.ReadAllTextAsync(file.Path));
+    }
+
+    private static void CreateDirectoryAlias(string alias, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(alias, target);
+            return;
+        }
+
+        var command = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        foreach (string argument in new[] { "/d", "/c", "mklink", "/J", alias, target }) command.ArgumentList.Add(argument);
+        using var process = Process.Start(command)!;
+        string output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, output);
+    }
+
+    [Fact]
     public async Task TwoCommitsAgainstOneOriginalVersion_OnlyOneCanReplaceIt()
     {
         using var file = new TemporaryFile();
@@ -237,7 +485,7 @@ public class FileServiceTests
     [InlineData(true)]
     public async Task HardLinkedSave_RequiresApprovalAndUpdatesBothNames(bool saveAs)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux())) return;
         using var file = new TemporaryFile();
         var service = new FileService();
         await File.WriteAllTextAsync(file.Path, "original text");
@@ -263,7 +511,7 @@ public class FileServiceTests
     [InlineData(true)]
     public async Task HardLinkedSave_RejectsAChangedVersionOrAnIdenticalReplacementFile(bool replaceFile)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux())) return;
         using var file = new TemporaryFile();
         var service = new FileService();
         await File.WriteAllTextAsync(file.Path, "original");
@@ -291,11 +539,49 @@ public class FileServiceTests
     }
 
     [Fact]
+    public async Task HardLinkedSave_ConcurrentApprovalsThroughDifferentNamesOnlyCommitOnce()
+    {
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux())) return;
+        using var file = new TemporaryFile();
+        var service = new FileService();
+        await File.WriteAllTextAsync(file.Path, "original");
+        string alias = file.Path + ".link";
+        CreateHardLink(alias, file.Path);
+        var first = await ApproveAsync(file.Path);
+        var second = await ApproveAsync(alias);
+        var results = await Task.WhenAll(CommitAsync(file.Path, "first", first), CommitAsync(alias, "second", second));
+        string committed = Assert.Single(results, text => text != null)!;
+        Assert.Equal(committed, await File.ReadAllTextAsync(file.Path));
+        Assert.Equal(committed, await File.ReadAllTextAsync(alias));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-*"));
+
+        async Task<HardLinkSaveTarget> ApproveAsync(string path)
+        {
+            var prompt = await Assert.ThrowsAsync<HardLinkSaveRequiredException>(() =>
+                service.CommitFileAsync(path, "edit", FileEncodingType.UTF8, LineEndingStyle.LF));
+            return prompt.Target;
+        }
+
+        async Task<string?> CommitAsync(string path, string content, HardLinkSaveTarget target)
+        {
+            try
+            {
+                await service.CommitHardLinkedFileAsync(path, content, FileEncodingType.UTF8, null, target);
+                return content;
+            }
+            catch (IOException) { return null; }
+        }
+    }
+
+    [Fact]
     public void InPlaceWriteFailure_RetainsRecoveryCopyWithTheExactOriginalBytes()
     {
         using var file = new TemporaryFile();
         byte[] original = [0xFF, 0xFE, 0x41, 0x00, 0x0D, 0x00];
         File.WriteAllBytes(file.Path, original);
+        string alias = file.Path + ".link";
+        bool supportsLinks = OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
+        if (supportsLinks) CreateHardLink(alias, file.Path);
         using (var target = File.Open(file.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         using (var failing = new FailingCopy())
         {
@@ -303,15 +589,29 @@ public class FileServiceTests
             string recovery = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file.Path)!, ".notepad-recovery-*.bak"));
             Assert.Contains(recovery, error.Message);
             Assert.Equal(original, File.ReadAllBytes(recovery));
+            if (OperatingSystem.IsLinux())
+            {
+                const UnixFileMode groupAndOther = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+                Assert.Equal((UnixFileMode)0, File.GetUnixFileMode(recovery) & groupAndOther);
+            }
         }
         Assert.Equal(0x42, File.ReadAllBytes(file.Path)[0]);
+        if (supportsLinks) Assert.Equal(File.ReadAllBytes(file.Path), File.ReadAllBytes(alias));
     }
 
-    internal static void CreateHardLink(string link, string existing) =>
-        Assert.True(CreateHardLinkW(link, existing, 0), $"CreateHardLinkW failed ({Marshal.GetLastWin32Error()}).");
+    internal static void CreateHardLink(string link, string existing)
+    {
+        bool created = OperatingSystem.IsWindows() ? CreateHardLinkW(link, existing, 0) : CreateLinuxHardLink(existing, link) == 0;
+        Assert.True(created, $"Hard-link creation failed ({Marshal.GetLastPInvokeError()}).");
+    }
 
     [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateHardLinkW(string link, string existing, nint security);
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int CreateLinuxHardLink([MarshalAs(UnmanagedType.LPUTF8Str)] string existing,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string link);
 
     private sealed class FailingCopy : MemoryStream
     {

@@ -18,7 +18,7 @@ public sealed partial class NeoEditor : Control
     private const int MaxUndoEntries = 512;
     private const long MaxUndoCharacters = 4L * 1024 * 1024;
 
-    private readonly record struct Selection(int Anchor, int Caret);
+    private readonly record struct Selection(int Anchor, int Caret, ColumnSelection? Columns = null);
     private sealed record EditOp(int Offset, string Removed, string Inserted,
         Selection Before, Selection After, long BeforeRevision, long AfterRevision, EditKind Kind,
         string? BeforeNewLine = null, string? AfterNewLine = null)
@@ -34,6 +34,7 @@ public sealed partial class NeoEditor : Control
     private long _savedRevision;
     private long _lastGroupEdit;
     private bool _continueGroup;
+    private char _pendingInputHighSurrogate;
     private double? _preferredCaretX;
     private bool _caretVisible = true;
     private readonly DispatcherTimer _caretTimer;
@@ -46,14 +47,19 @@ public sealed partial class NeoEditor : Control
     public string NewLine { get; set; } = "\r\n";
     public bool PreservePastedLineEndings { get; set; }
     public bool WindowsOnlyLineEndings { get; set; }
+    public static readonly StyledProperty<bool> AutoIndentProperty = AvaloniaProperty.Register<NeoEditor, bool>(nameof(AutoIndent));
+    public bool AutoIndent { get => GetValue(AutoIndentProperty); set => SetValue(AutoIndentProperty, value); }
     public int LineCount => _doc.LineCount;
     public int TextLength => _doc.Length;
     public long DocumentVersion { get; private set; }
     internal long SelectionVersion { get; private set; }
     public long Revision { get; private set; }
     public bool IsModified => Revision != _savedRevision;
-    public bool CanUndo => _undo.Count > 0;
-    public bool CanRedo => _redo.Count > 0;
+    public bool CanUndo => !IsReadOnly && _undo.Count > 0;
+    public bool CanRedo => !IsReadOnly && _redo.Count > 0;
+    public static readonly StyledProperty<bool> IsReadOnlyProperty =
+        AvaloniaProperty.Register<NeoEditor, bool>(nameof(IsReadOnly));
+    public bool IsReadOnly { get => GetValue(IsReadOnlyProperty); set => SetValue(IsReadOnlyProperty, value); }
     public static readonly DirectProperty<NeoEditor, bool> OvertypeModeProperty =
         AvaloniaProperty.RegisterDirect<NeoEditor, bool>(nameof(OvertypeMode), editor => editor.OvertypeMode);
     private bool _overtypeMode;
@@ -89,7 +95,10 @@ public sealed partial class NeoEditor : Control
         Cursor = new Cursor(StandardCursorType.Ibeam);
         _inputMethod = new EditorInputMethod(this);
         TextInputOptions.SetMultiline(this, true);
-        TextInputMethodClientRequested += (_, e) => e.Client = _inputMethod;
+        TextInputMethodClientRequested += (_, e) =>
+        {
+            if (!IsReadOnly) e.Client = _inputMethod;
+        };
         ScrollInvalidated += (_, _) => _inputMethod.NotifyGeometry();
         _caretTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) =>
         {
@@ -105,6 +114,7 @@ public sealed partial class NeoEditor : Control
         LostFocus += (_, _) =>
         {
             _continueGroup = false;
+            _pendingInputHighSurrogate = default;
             SetComposition(null);
             _caretTimer.Stop();
             InvalidateVisual();
@@ -112,13 +122,23 @@ public sealed partial class NeoEditor : Control
     }
 
     public string GetText() => _snapshot ??= _doc.GetTextInRange(0, _doc.Length);
-    public string GetSelectedText() => _doc.GetTextInRange(SelectionStart, SelectionLength);
+    internal string GetTextPrefix(int limit) => _doc.GetTextInRange(0, Math.Min(limit, _doc.Length));
+    public string GetSelectedText() => _columns is { } block && block.Right > block.Left
+        ? CopyColumns(block) : _doc.GetTextInRange(SelectionStart, SelectionLength);
+
+    internal (string Text, bool IsSelection, bool Truncated) GetCharacterSample()
+    {
+        int selected = SelectionLength;
+        int count = selected == 0 ? Math.Min(2, TextLength - CaretOffset) : Math.Min(16, selected);
+        return (_doc.GetTextInRange(selected == 0 ? CaretOffset : SelectionStart, count), selected != 0, selected > count);
+    }
 
     public void LoadDocument(string? text, bool restoredDraft = false)
     {
         text ??= "";
         _inputMethod.Reset();
         _doc = new PieceTreeEngine(text);
+        ClearDisplayAnnotations();
         _snapshot = text;
         Revision = ++_nextRevision;
         _savedRevision = restoredDraft ? -1 : Revision;
@@ -128,6 +148,7 @@ public sealed partial class NeoEditor : Control
         _redo.Clear();
         _continueGroup = false;
         _caretOffset = _anchorOffset = 0;
+        _columns = null;
         _preferredCaretX = null;
         _wrappedRowEnd = false;
         if (OperatingSystem.IsWindows() && WindowsAutomationHandle != 0) _automationWindow?.ResetRanges();
@@ -208,10 +229,15 @@ public sealed partial class NeoEditor : Control
         return advance ? AdjacentOffset(offset, direction) : offset;
     }
 
-    private void MoveSelection(int anchor, int caret, bool keepPreferredX = false, bool wrappedRowEnd = false)
+    private void MoveSelection(int anchor, int caret, bool keepPreferredX = false, bool wrappedRowEnd = false, bool preserveColumns = false)
     {
         _continueGroup = false;
         if (_anchorOffset != anchor || _caretOffset != caret) SelectionVersion++;
+        if (!preserveColumns && _columns.HasValue)
+        {
+            _columns = null;
+            SelectionVersion++;
+        }
         _anchorOffset = anchor;
         _caretOffset = caret;
         _wrappedRowEnd = wrappedRowEnd;
@@ -222,11 +248,13 @@ public sealed partial class NeoEditor : Control
     public void MoveCaretToLine(int lineIndex) =>
         SetSelection(_doc.GetOffsetFromLineColumn(Math.Clamp(lineIndex, 0, LineCount - 1), 0), 0);
 
+    /// <summary>Applies a host edit, including when user editing is read-only.</summary>
     public void ReplaceRange(int start, int length, string newText, int? endCaret = null) =>
         ReplaceRange(start, length, newText, EditKind.Independent, endCaret);
 
     internal void ConvertLineEndings(string ending)
     {
+        if (IsReadOnly) return;
         string text = GetText();
         string converted = TextLineEndings.Normalize(text, ending);
         if (string.Equals(text, converted, StringComparison.Ordinal))
@@ -237,6 +265,16 @@ public sealed partial class NeoEditor : Control
         var selection = new Selection(TextLineEndings.ConvertOffset(text, _anchorOffset, ending),
             TextLineEndings.ConvertOffset(text, _caretOffset, ending));
         ReplaceRange(0, text.Length, converted, EditKind.Independent, selection: selection, newLine: ending);
+    }
+
+    internal bool ReplaceNulsWithSpaces()
+    {
+        if (IsReadOnly) return false;
+        string text = GetText();
+        if (!text.Contains('\0')) return false;
+        ReplaceRange(0, text.Length, text.Replace('\0', ' '), EditKind.Independent,
+            selection: new Selection(_anchorOffset, _caretOffset));
+        return true;
     }
 
     private void ReplaceRange(int start, int length, string text, EditKind kind, int? endCaret = null,
@@ -256,7 +294,7 @@ public sealed partial class NeoEditor : Control
             return;
         }
 
-        var before = new Selection(_anchorOffset, _caretOffset);
+        var before = new Selection(_anchorOffset, _caretOffset, _columns);
         long beforeRevision = Revision;
         string? beforeNewLine = newLine != null ? NewLine : null;
         ApplyChange(start, length, text);
@@ -264,6 +302,7 @@ public sealed partial class NeoEditor : Control
         var after = selection ?? new Selection(caret, caret);
         _anchorOffset = after.Anchor;
         _caretOffset = after.Caret;
+        _columns = after.Columns;
         if (newLine != null) NewLine = newLine;
         Revision = ++_nextRevision;
         var edit = new EditOp(start, removed, text, before, after, beforeRevision, Revision, kind, beforeNewLine, newLine);
@@ -337,6 +376,7 @@ public sealed partial class NeoEditor : Control
         int oldLineCount = _doc.LineCount;
         _doc.Delete(offset, length);
         _doc.Insert(offset, text);
+        ClearDisplayAnnotations();
         _snapshot = null;
         DocumentVersion++;
         if (OperatingSystem.IsWindows() && WindowsAutomationHandle != 0)
@@ -364,22 +404,26 @@ public sealed partial class NeoEditor : Control
 
     private void NotifyCaretMoved()
     {
+        _pendingInputHighSurrogate = default;
         var (line, column) = _doc.GetLineColumnFromOffset(_caretOffset);
         _inputMethod.NotifySelectionAndText();
         CaretMoved?.Invoke(this, (line + 1, column + 1));
         NotifyNativeAutomationSelection();
     }
 
-    public void InsertAtCaret(string text) => ReplaceRange(SelectionStart, SelectionLength, text);
+    public void InsertAtCaret(string text)
+    {
+        if (!IsReadOnly && !TryEditColumns(text)) ReplaceRange(SelectionStart, SelectionLength, text);
+    }
 
     public void DeleteSelection()
     {
-        if (SelectionLength != 0) InsertAtCaret("");
+        if (HasTextSelection) InsertAtCaret("");
     }
 
     public void Undo()
     {
-        if (_undo.Last?.Value is not { } edit) return;
+        if (IsReadOnly || _undo.Last?.Value is not { } edit) return;
         _undo.RemoveLast();
         _undoCharacters -= edit.StoredCharacters;
         _redo.Push(edit);
@@ -388,7 +432,7 @@ public sealed partial class NeoEditor : Control
 
     public void Redo()
     {
-        if (!_redo.TryPop(out var edit)) return;
+        if (IsReadOnly || !_redo.TryPop(out var edit)) return;
         RememberUndo(edit);
         Replay(edit.Offset, edit.Removed.Length, edit.Inserted, edit.After, edit.AfterRevision, edit.AfterNewLine);
     }
@@ -399,6 +443,7 @@ public sealed partial class NeoEditor : Control
         ApplyChange(offset, length, text);
         _anchorOffset = selection.Anchor;
         _caretOffset = selection.Caret;
+        _columns = selection.Columns;
         if (newLine != null && !WindowsOnlyLineEndings) NewLine = newLine;
         Revision = revision;
         PublishChange();
@@ -407,10 +452,36 @@ public sealed partial class NeoEditor : Control
     protected override void OnTextInput(TextInputEventArgs e)
     {
         base.OnTextInput(e);
-        if (e.Handled || string.IsNullOrEmpty(e.Text) || !IsValidUtf16(e.Text)) return;
+        char highSurrogate = _pendingInputHighSurrogate;
+        _pendingInputHighSurrogate = default;
+        if (IsReadOnly)
+        {
+            e.Handled = true;
+            return;
+        }
+        if (e.Handled || string.IsNullOrEmpty(e.Text)) return;
+        string text = e.Text;
+        // Windows can deliver a supplementary character as two WM_CHAR events.
+        if (text.Length == 1 && char.IsSurrogate(text[0]))
+        {
+            e.Handled = true;
+            if (char.IsHighSurrogate(text[0]))
+            {
+                _pendingInputHighSurrogate = text[0];
+                return;
+            }
+            if (highSurrogate == default) return;
+            text = highSurrogate + text;
+        }
+        if (!IsValidUtf16(text)) return;
         bool composing = _preeditText.Length != 0;
         SetComposition(null);
-        string text = TextLineEndings.Normalize(e.Text, NewLine);
+        text = TextLineEndings.Normalize(text, NewLine);
+        if (TryEditColumns(text))
+        {
+            e.Handled = true;
+            return;
+        }
         int start = SelectionStart;
         int length = SelectionLength;
         bool plainTyping = !composing && length == 0 && !text.AsSpan().ContainsAny('\r', '\n');
@@ -435,37 +506,66 @@ public sealed partial class NeoEditor : Control
     {
         base.OnKeyDown(e);
         if (e.Handled) return;
+        if (_selectionPointer == null && _lastLinkPoint is { } point && e.KeyModifiers == LinkModifier)
+            SetHoveredLink(HitWebLink(point));
+        else SetHoveredLink(null);
         if (_preeditText.Length > 0) return;
 
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
         bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
-        if (ctrl && alt) return; // AltGr combinations reach the platform text-input path.
+        bool mac = OperatingSystem.IsMacOS();
+        bool primary = mac ? e.KeyModifiers.HasFlag(KeyModifiers.Meta) : ctrl;
+        bool word = mac ? alt : ctrl;
+        if (!mac && ctrl && alt) return; // AltGr combinations reach the platform text-input path.
+        if (HandleColumnAndLineKeys(e.Key, shift, alt, primary, ctrl))
+        {
+            e.Handled = true;
+            return;
+        }
         switch (e.Key)
         {
-            case Key.Left when !alt: MoveHorizontal(-1, shift, ctrl); break;
-            case Key.Right when !alt: MoveHorizontal(1, shift, ctrl); break;
+            case Key.Left when mac && primary && !alt: MoveToEdge(true, shift, false); break;
+            case Key.Right when mac && primary && !alt: MoveToEdge(false, shift, false); break;
+            case Key.Left when !alt || mac: MoveHorizontal(-1, shift, word); break;
+            case Key.Right when !alt || mac: MoveHorizontal(1, shift, word); break;
             case Key.Up when !alt: MoveVertical(-1, shift); break;
             case Key.Down when !alt: MoveVertical(1, shift); break;
             case Key.Home when !alt: MoveToEdge(true, shift, ctrl); break;
             case Key.End when !alt: MoveToEdge(false, shift, ctrl); break;
             case Key.PageUp when !alt: MoveVertical(-PageRows, shift); break;
             case Key.PageDown when !alt: MoveVertical(PageRows, shift); break;
-            case Key.Enter when !ctrl && !alt: InsertAtCaret(NewLine); break;
-            case Key.Tab when !ctrl && !alt && !shift: InsertAtCaret("\t"); break;
-            case Key.Insert when !ctrl && !alt && !shift:
+            case Key.C when primary && !alt && !shift:
+            case Key.Insert when !mac && ctrl && !alt && !shift:
+                _inputMethod.ExecuteContextMenuAction(ContextMenuAction.Copy);
+                break;
+            case Key.X when !IsReadOnly && primary && !alt && !shift:
+            case Key.Delete when !IsReadOnly && !mac && !ctrl && !alt && shift:
+                _inputMethod.ExecuteContextMenuAction(ContextMenuAction.Cut);
+                break;
+            case Key.V when !IsReadOnly && primary && !alt && !shift:
+            case Key.Insert when !IsReadOnly && !mac && !ctrl && !alt && shift:
+                _inputMethod.ExecuteContextMenuAction(ContextMenuAction.Paste);
+                break;
+            case Key.Enter when !IsReadOnly && !primary && !alt:
+                if (HasColumnSelection) MoveSelection(_caretOffset, _caretOffset);
+                InsertAtCaret(AutoIndent ? NewLine + GetIndentationAt(SelectionStart) : NewLine);
+                break;
+            case Key.Tab when !IsReadOnly && !primary && !alt && !shift: InsertAtCaret("\t"); break;
+            case Key.Insert when !IsReadOnly && !primary && !alt && !shift:
                 SetAndRaise(OvertypeModeProperty, ref _overtypeMode, !OvertypeMode);
                 _continueGroup = false;
                 _caretVisible = true;
                 InvalidateVisual();
                 break;
-            case Key.Back when alt: Undo(); break;
-            case Key.Back: DeleteAdjacent(-1, ctrl); break;
-            case Key.Delete when !shift && !alt: DeleteAdjacent(1, ctrl); break;
-            case Key.Z when ctrl && shift: Redo(); break;
-            case Key.Z when ctrl: Undo(); break;
-            case Key.Y when ctrl: Redo(); break;
-            case Key.A when ctrl: SelectAll(); break;
+            case Key.Back when alt && !mac: Undo(); break;
+            case Key.Back when !IsReadOnly: DeleteAdjacent(-1, word); break;
+            case Key.Delete when !IsReadOnly && !shift && (!alt || mac): DeleteAdjacent(1, word); break;
+            case Key.Z when primary && !alt && shift: Redo(); break;
+            case Key.Z when primary && !alt: Undo(); break;
+            case Key.Y when primary && !mac: Redo(); break;
+            case Key.A when primary && !alt: SelectAll(); break;
+            case Key.Escape when HasColumnSelection: MoveSelection(_caretOffset, _caretOffset); break;
             default: return;
         }
         e.Handled = true;
@@ -473,6 +573,7 @@ public sealed partial class NeoEditor : Control
 
     private void DeleteAdjacent(int direction, bool word)
     {
+        if (TryEditColumns("", direction)) return;
         if (SelectionLength != 0)
         {
             DeleteSelection();
@@ -533,7 +634,7 @@ public sealed partial class NeoEditor : Control
             UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark ? 1 : 2;
     }
 
-    public Task CutAsync() => CopySelectionAsync(removeSelection: true);
+    public Task CutAsync() => IsReadOnly ? Task.CompletedTask : CopySelectionAsync(removeSelection: true);
     public Task CopyAsync() => CopySelectionAsync(removeSelection: false);
 
     private (long Document, long Selection) CurrentSelection => (DocumentVersion, SelectionVersion);
@@ -542,22 +643,24 @@ public sealed partial class NeoEditor : Control
     {
         var selection = CurrentSelection;
         var top = TopLevel.GetTopLevel(this);
-        if (SelectionLength == 0 || top?.Clipboard is not { } clipboard) return;
+        if (!HasTextSelection || top?.Clipboard is not { } clipboard) return;
         await clipboard.SetTextAsync(GetSelectedText());
-        if (removeSelection && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
+        if (removeSelection && !IsReadOnly && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
             DeleteSelection();
     }
 
     public async Task PasteAsync()
     {
+        if (IsReadOnly) return;
         var selection = CurrentSelection;
         var top = TopLevel.GetTopLevel(this);
         if (top?.Clipboard is not { } clipboard) return;
         string? text = await clipboard.TryGetTextAsync();
-        if (!string.IsNullOrEmpty(text) && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
+        if (!IsReadOnly && !string.IsNullOrEmpty(text) && selection == CurrentSelection && TopLevel.GetTopLevel(this) == top)
         {
             if (WindowsOnlyLineEndings || !PreservePastedLineEndings)
                 text = TextLineEndings.Normalize(text, WindowsOnlyLineEndings ? "\r\n" : NewLine);
+            if (TryEditColumns(text)) return;
             int start = SelectionStart;
             ReplaceRange(start, SelectionLength, text, endCaret: start + text.Length);
         }

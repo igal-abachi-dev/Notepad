@@ -127,6 +127,7 @@ public sealed partial class NeoEditor
         public override int Length => editor.TextLength;
         public override bool IsFocused => editor.IsFocused && TopLevel.GetTopLevel(editor) is Window { IsActive: true };
         public override bool IsEnabled => editor.IsEffectivelyEnabled;
+        public override bool IsReadOnly => editor.IsReadOnly || !IsEnabled;
         public override TextSpan Selection => new(editor.SelectionStart, editor.SelectionStart + editor.SelectionLength);
         public override int Caret => editor.CaretOffset;
         public override string GetText(TextSpan range) => editor._doc.GetTextInRange(range.Start, range.Length);
@@ -276,7 +277,7 @@ public sealed partial class NeoEditor
 
         public override void SetText(string value)
         {
-            if (!IsEnabled) throw new InvalidOperationException("The editor is disabled.");
+            if (IsReadOnly) throw new InvalidOperationException("The editor cannot accept text.");
             editor.ReplaceRange(0, Length, value);
         }
     }

@@ -1,4 +1,5 @@
 ﻿using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.Input;
 using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
@@ -35,7 +36,6 @@ public partial class MainWindowViewModel
         var previous = Document;
         _loadRequest++;
         _pendingLogAppend = null;
-        CurrentLanguage = SyntaxLanguage.Plain;
         Document = CreateUntitledDocument();
         ResetEditor("");
         UpdateEncodingDisplay();
@@ -77,6 +77,41 @@ public partial class MainWindowViewModel
         Document.IsUntitled ? Task.CompletedTask : OpenAsync(Document.FilePath, selectEncoding: true);
 
     [RelayCommand]
+    private async Task ReloadFromDiskAsync()
+    {
+        var active = Document;
+        if (active.IsUntitled || !await CheckSaveChangesAsync() || active != Document) return;
+        await LoadFileAsync(active.FilePath, active.EncodingType, appendLog: false);
+    }
+
+    [RelayCommand]
+    private Task ViewFileAsEncodingAsync(FileEncodingType? encoding) =>
+        Document.IsUntitled ? Task.CompletedTask : OpenAsync(Document.FilePath, selectEncoding: false, requestedEncoding: encoding);
+
+    [RelayCommand]
+    private async Task OpenContainingFolderAsync()
+    {
+        if (Document.IsUntitled || OwnerWindow is not { } window) return;
+        try
+        {
+            string path = DocumentPath.GetFullPath(Document.FilePath);
+            var folder = new DirectoryInfo(Path.GetDirectoryName(path)!);
+            bool hasWindowsHandle = window.TryGetPlatformHandle()?.HandleDescriptor == "HWND";
+            bool selected = await Task.Run(() =>
+            {
+                if (!folder.Exists) throw new DirectoryNotFoundException("The folder is unavailable.");
+                return OperatingSystem.IsWindows() && hasWindowsHandle && File.Exists(path) && WindowsFileLocation.TrySelect(path);
+            });
+            if (!selected && !await window.Launcher.LaunchDirectoryInfoAsync(folder))
+                throw new IOException("The file manager did not open the folder.");
+        }
+        catch (Exception ex) when (IsFileError(ex) || ex is Win32Exception or InvalidOperationException)
+        {
+            await ShowErrorAsync($"Cannot open the containing folder. {ex.Message}");
+        }
+    }
+
+    [RelayCommand]
     private async Task ChangeDefaultEncodingAsync()
     {
         var dialog = new EncodingDialog(Settings.DefaultEncoding);
@@ -93,13 +128,13 @@ public partial class MainWindowViewModel
         PersistSettings();
     }
 
-    private async Task OpenAsync(string? path, bool selectEncoding)
+    private async Task OpenAsync(string? path, bool selectEncoding, FileEncodingType? requestedEncoding = null)
     {
         var original = Document;
         long revision = _editVersion;
         try
         {
-            FileEncodingType? encoding = null;
+            FileEncodingType? encoding = requestedEncoding;
             if (string.IsNullOrEmpty(path))
             {
                 var file = await PickFileAsync(original, saveEncoding: null);
@@ -125,20 +160,21 @@ public partial class MainWindowViewModel
         }
     }
 
-    public async Task<bool> LoadFileAsync(string path, FileEncodingType? requestedEncoding = null)
+    public async Task<bool> LoadFileAsync(string path, FileEncodingType? requestedEncoding = null, bool appendLog = true)
     {
         var previousDocument = Document;
         long previousVersion = _editVersion;
         long request = ++_loadRequest;
         var windowsOnly = Settings.WindowsOnlyLineEndings;
-        LoadedFile file;
+        LoadedFile? file;
         bool openedCopy = false;
+        long approvedLength = 0;
         try
         {
-            path = Path.GetFullPath(path);
+            path = DocumentPath.GetFullPath(path);
             try
             {
-                file = await _fileService.ReadDocumentAsync(path, requestedEncoding, windowsOnly);
+                file = await _fileService.ReadDocumentForEditorAsync(path, requestedEncoding, windowsOnly, ConfirmLargeFileAsync);
             }
             catch (DecoderFallbackException) when (IsCurrent() && OwnerWindow is { IsVisible: true })
             {
@@ -146,7 +182,8 @@ public partial class MainWindowViewModel
                     $"{Path.GetFileName(path)} contains invalid bytes for this encoding. Open an untitled copy with replacement characters? " +
                     "Choose No to try a different encoding.", MessageButtons.YesNo);
                 if (choice != DialogChoice.Yes || !IsCurrent()) return false;
-                file = await _fileService.ReadDocumentWithReplacementAsync(path, requestedEncoding, windowsOnly);
+                file = await _fileService.ReadDocumentForEditorAsync(path, requestedEncoding, windowsOnly, ConfirmLargeFileAsync,
+                    replaceInvalidBytes: true);
                 openedCopy = true;
             }
         }
@@ -158,8 +195,8 @@ public partial class MainWindowViewModel
             return false;
         }
 
-        if (!IsCurrent()) return false;
-        _pendingLogAppend = !openedCopy && file.Content.StartsWith(".LOG", StringComparison.Ordinal)
+        if (file == null || !IsCurrent()) return false;
+        _pendingLogAppend = appendLog && !openedCopy && file.Content.StartsWith(".LOG", StringComparison.Ordinal)
             ? $"\r\n{FormatTimeDate(_timeProvider.GetLocalNow().DateTime)}\r\n" : null;
         var encodingType = openedCopy ? FileEncodingType.UTF8 : file.EncodingType;
         Document = new DocumentModel
@@ -167,13 +204,13 @@ public partial class MainWindowViewModel
             FilePath = openedCopy ? "" : path,
             IsUntitled = openedCopy,
             IsModified = openedCopy || _pendingLogAppend != null,
+            IsReadOnlyFile = !openedCopy && file.IsReadOnly,
             Encoding = openedCopy ? _fileService.GetEncoding(encodingType) : file.Encoding,
             EncodingType = encodingType,
             SaveEncodingType = encodingType,
             LineEnding = file.LineEnding,
             SavedFileVersion = openedCopy ? null : file.Version
         };
-        CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
         ResetEditor(file.Content);
         UpdateEncodingDisplay();
         UpdateStatus();
@@ -184,6 +221,21 @@ public partial class MainWindowViewModel
         return true;
 
         bool IsCurrent() => Document == previousDocument && _editVersion == previousVersion && _loadRequest == request;
+
+        async Task<bool> ConfirmLargeFileAsync(long length)
+        {
+            if (!IsCurrent()) return false;
+            if (length <= approvedLength) return true;
+            if (ActiveDialogOwner is not { IsVisible: true } owner) return false;
+
+            var choice = await MessageDialog.ShowAsync(owner, "Open large file",
+                $"{Path.GetFileName(path)} is {length / (1024d * 1024):N1} MiB. " +
+                "Opening it loads the entire file into memory and may take a while.",
+                [("_Open", DialogChoice.Ok), ("Cancel", DialogChoice.Cancel)], defaultChoice: DialogChoice.Cancel);
+            if (choice != DialogChoice.Ok || !IsCurrent()) return false;
+            approvedLength = length;
+            return true;
+        }
     }
 
     private static string FormatTimeDate(DateTime moment) =>
@@ -192,7 +244,7 @@ public partial class MainWindowViewModel
     [RelayCommand(AllowConcurrentExecutions = true)]
     private async Task SaveFileAsync()
     {
-        if (!_hardLinkPromptPending && !_savePickerPending) await SaveCurrentDocumentAsync();
+        if (!IsFollowingLog && !_hardLinkPromptPending && !_savePickerPending) await SaveCurrentDocumentAsync();
     }
 
     private Task<bool> SaveCurrentDocumentAsync() =>
@@ -218,16 +270,29 @@ public partial class MainWindowViewModel
         }
     }
 
-    private async Task<FilePickerDialog.Choice?> PickSaveChoiceAsync(DocumentModel original, FileEncodingType encoding)
+    private async Task<FilePickerDialog.Choice?> PickSaveChoiceAsync(DocumentModel original, FileEncodingType encoding,
+        string? readOnlyPath = null)
     {
         if (_hardLinkPromptPending || _savePickerPending) return null;
         _savePickerPending = true;
-        try { return await PickFileAsync(original, encoding); }
+        try
+        {
+            if (readOnlyPath != null)
+            {
+                if (OwnerWindow is not { IsVisible: true } owner) return null;
+                var answer = await MessageDialog.ShowAsync(owner, "Read-only file",
+                    $"{Path.GetFileName(readOnlyPath)} is read-only. Save your edits to another file?",
+                    [("Save _As…", DialogChoice.SaveAs), ("Cancel", DialogChoice.Cancel)]);
+                if (answer != DialogChoice.SaveAs || Document != original) return null;
+            }
+            return await PickFileAsync(original, encoding);
+        }
         finally { _savePickerPending = false; }
     }
 
     private Task<FilePickerDialog.Choice?> PickFileAsync(DocumentModel document, FileEncodingType? saveEncoding) =>
-        new FilePickerDialog(document.IsUntitled ? null : document.FilePath, RecentFiles.FirstOrDefault(), saveEncoding)
+        new FilePickerDialog(document.IsUntitled ? null : document.FilePath, RecentFiles.FirstOrDefault(), saveEncoding,
+            document.IsUntitled && document.SuggestedExtension is { } extension ? "snippet" + extension : null)
             .ShowDialog<FilePickerDialog.Choice?>(GetMainWindow());
 
     private async Task<bool> SaveWithRetryAsync(DocumentModel original, string path, FileEncodingType encoding,
@@ -239,6 +304,34 @@ public partial class MainWindowViewModel
             while (Document == original)
             {
                 try { return await SaveRevisionAsync(original, path, encoding, approvedLink, createNew); }
+                catch (Exception ex) when (ex is ReadOnlyFileException || IsAccessDenied(ex))
+                {
+                    if (Document != original) return false;
+                    bool samePath = !original.IsUntitled && SettingsService.PathComparer.Equals(original.FilePath, path);
+                    if (samePath)
+                        original.IsReadOnlyFile = true;
+                    FilePickerDialog.Choice? file;
+                    if (OperatingSystem.IsWindows() && samePath && !createNew && approvedLink == null &&
+                        original.SavedFileVersion?.ResolvedPath != null && IsAccessDenied(ex) && !ElevatedSave.IsAdministrator())
+                    {
+                        var answer = await AskAboutAdministratorSaveAsync(path);
+                        if (Document != original) return false;
+                        if (answer == DialogChoice.SaveAsAdministrator)
+                            return await SaveRevisionAsync(original, path, encoding, null, createNew: false, asAdministrator: true);
+                        if (answer != DialogChoice.SaveAs) return false;
+                        file = await PickSaveChoiceAsync(original, encoding);
+                    }
+                    else
+                    {
+                        if (ex is not ReadOnlyFileException) throw;
+                        file = await PickSaveChoiceAsync(original, encoding, readOnlyPath: path);
+                    }
+                    if (file is not { Encoding: { } pickedEncoding }) return false;
+                    path = file.Path;
+                    encoding = pickedEncoding;
+                    createNew = !file.OverwriteConfirmed;
+                    approvedLink = null;
+                }
                 catch (HardLinkSaveRequiredException ex) when (approvedLink == null)
                 {
                     if (Document != original) return false;
@@ -256,10 +349,12 @@ public partial class MainWindowViewModel
                     encoding = pickedEncoding;
                     createNew = !file.OverwriteConfirmed;
                 }
-                catch (EncoderFallbackException) when (encoding == FileEncodingType.ANSI && Document == original)
+                catch (EncoderFallbackException) when (encoding is FileEncodingType.ANSI or FileEncodingType.OEM437 && Document == original)
                 {
-                    var answer = await ShowMessageAsync("Save encoding",
-                        "Some characters cannot be saved in ANSI. Save this file as UTF-8?", MessageButtons.YesNo);
+                    if (ActiveDialogOwner is not { IsVisible: true } owner) return false;
+                    var answer = await MessageDialog.ShowAsync(owner, "Save as UTF-8?",
+                        "The selected encoding cannot represent some characters. Use UTF-8 to preserve them?",
+                        [("Use _UTF-8", DialogChoice.Yes), ("Cancel", DialogChoice.Cancel)], defaultChoice: DialogChoice.Cancel);
                     if (answer != DialogChoice.Yes) return false;
                     encoding = FileEncodingType.UTF8;
                 }
@@ -271,6 +366,23 @@ public partial class MainWindowViewModel
             await ShowErrorAsync($"Cannot save file. {ex.Message}");
             return false;
         }
+    }
+
+    private static bool IsAccessDenied(Exception ex) => ex is UnauthorizedAccessException or IOException { HResult: unchecked((int)0x80070005) } ||
+        ex.InnerException is UnauthorizedAccessException or Win32Exception { NativeErrorCode: 5 };
+
+    private async Task<DialogChoice> AskAboutAdministratorSaveAsync(string path)
+    {
+        if (_savePickerPending || OwnerWindow is not { IsVisible: true } owner) return DialogChoice.Cancel;
+        _savePickerPending = true;
+        try
+        {
+            return await MessageDialog.ShowAsync(owner, "Administrator permission required",
+                $"Windows denied access to {Path.GetFileName(path)}. Save it with administrator permission or choose another file.",
+                [("Save as _Administrator", DialogChoice.SaveAsAdministrator), ("Save _As…", DialogChoice.SaveAs), ("Cancel", DialogChoice.Cancel)],
+                defaultChoice: DialogChoice.Cancel);
+        }
+        finally { _savePickerPending = false; }
     }
 
     private async Task<DialogChoice> AskAboutHardLinksAsync(string path)
@@ -289,12 +401,13 @@ public partial class MainWindowViewModel
     }
 
     private async Task<bool> SaveRevisionAsync(DocumentModel original, string path, FileEncodingType encoding,
-        HardLinkSaveTarget? approvedLink, bool createNew)
+        HardLinkSaveTarget? approvedLink, bool createNew, bool asAdministrator = false)
     {
         if (Document != original || EditorControl is not { } editor) return false;
         long revision = editor.CaptureSaveRevision();
         string content = editor.GetText();
         var lineEnding = original.LineEnding;
+        var pendingEncoding = original.SaveEncodingType;
         path = Path.GetFullPath(path);
 
         _pendingWrites++;
@@ -304,20 +417,28 @@ public partial class MainWindowViewModel
         {
             var expected = !original.IsUntitled && SettingsService.PathComparer.Equals(original.FilePath, path)
                 ? original.SavedFileVersion : null;
-            var fileVersion = approvedLink is { } approved
-                ? await _fileService.CommitHardLinkedFileAsync(path, content, encoding, expected, approved)
-                : createNew
-                    ? await _fileService.CommitNewFileAsync(path, content, encoding)
-                    : await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
+            var fileVersion = asAdministrator
+                ? await ElevatedSave.SaveAsync(_fileService, path, content, encoding, lineEnding, expected ?? throw new FileChangedException())
+                : approvedLink is { } approved
+                    ? await _fileService.CommitHardLinkedFileAsync(path, content, encoding, expected, approved)
+                    : createNew
+                        ? await _fileService.CommitNewFileAsync(path, content, encoding)
+                        : await _fileService.CommitFileAsync(path, content, encoding, lineEnding, expected);
+            if (fileVersion == null) return false;
             if (Document != original || EditorControl != editor) return true;
+            StopFollowingFile();
             editor.MarkSaved(revision);
             original.FilePath = path;
             original.IsUntitled = false;
-            original.IsModified = editor.IsModified;
-            original.EncodingType = original.SaveEncodingType = encoding;
+            original.IsReadOnlyFile = asAdministrator;
+            original.EncodingType = encoding;
+            if (original.SaveEncodingType == pendingEncoding) original.SaveEncodingType = encoding;
             original.Encoding = _fileService.GetEncoding(encoding);
             original.SavedFileVersion = fileVersion;
-            CurrentLanguage = SyntaxMatcher.DetectLanguage(path);
+            UpdateDocumentModified();
+            RefreshLanguage();
+            NotifyEditorAppearance();
+            UpdateRunScriptAvailability();
             OnPropertyChanged(nameof(Document));
             UpdateEncodingDisplay();
             AddRecentFile(path);
@@ -384,6 +505,12 @@ public partial class MainWindowViewModel
 
     internal async Task OpenStartupFileAsync(string path, FileEncodingType? encoding, bool print)
     {
+        try { path = DocumentPath.GetFullPath(path); }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            await ShowErrorAsync($"Cannot open file. {ex.Message}");
+            return;
+        }
         if (!File.Exists(path) && !Path.HasExtension(path)) path += ".txt";
         if (!File.Exists(path))
         {

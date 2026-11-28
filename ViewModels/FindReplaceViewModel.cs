@@ -20,6 +20,9 @@ public partial class FindReplaceViewModel : ObservableObject
     public bool IsReplaceMode => !IsFindMode;
     public string Title => IsFindMode ? "Find" : "Replace";
 
+    [ObservableProperty]
+    private string? _searchFeedback;
+
     public string FindText
     {
         get => _owner.SearchSettings.SearchString;
@@ -28,8 +31,10 @@ public partial class FindReplaceViewModel : ObservableObject
             if (_owner.SearchSettings.SearchString != value)
             {
                 _owner.SearchSettings.SearchString = value ?? string.Empty;
+                _owner.RefreshSearchPreview();
                 OnPropertyChanged();
                 FindNextCommand.NotifyCanExecuteChanged();
+                FindPreviousCommand.NotifyCanExecuteChanged();
                 ReplaceCommand.NotifyCanExecuteChanged();
                 ReplaceAllCommand.NotifyCanExecuteChanged();
             }
@@ -57,6 +62,7 @@ public partial class FindReplaceViewModel : ObservableObject
             if (_owner.SearchSettings.MatchCase != value)
             {
                 _owner.SearchSettings.MatchCase = value;
+                _owner.RefreshSearchPreview();
                 OnPropertyChanged();
             }
         }
@@ -75,19 +81,6 @@ public partial class FindReplaceViewModel : ObservableObject
         }
     }
 
-    public bool SearchUp
-    {
-        get => _owner.SearchSettings.SearchUp;
-        set
-        {
-            if (_owner.SearchSettings.SearchUp != value)
-            {
-                _owner.SearchSettings.SearchUp = value;
-                OnPropertyChanged();
-            }
-        }
-    }
-
     public bool UseRegex
     {
         get => _owner.SearchSettings.UseRegex;
@@ -96,6 +89,7 @@ public partial class FindReplaceViewModel : ObservableObject
             if (_owner.SearchSettings.UseRegex != value)
             {
                 _owner.SearchSettings.UseRegex = value;
+                _owner.RefreshSearchPreview();
                 OnPropertyChanged();
             }
         }
@@ -109,8 +103,20 @@ public partial class FindReplaceViewModel : ObservableObject
             if (_owner.SearchSettings.WholeWord != value)
             {
                 _owner.SearchSettings.WholeWord = value;
+                _owner.RefreshSearchPreview();
                 OnPropertyChanged();
             }
+        }
+    }
+
+    public bool HighlightMatches
+    {
+        get => _owner.SearchSettings.HighlightMatches;
+        set
+        {
+            if (_owner.SearchSettings.HighlightMatches == value) return;
+            _owner.SetSearchHighlightsEnabled(value);
+            OnPropertyChanged();
         }
     }
 
@@ -118,7 +124,10 @@ public partial class FindReplaceViewModel : ObservableObject
     private bool CanReplace() => IsReplaceMode && HasQuery();
 
     [RelayCommand(CanExecute = nameof(HasQuery))]
-    private Task FindNextAsync() => _owner.FindFromDialogAsync(IsFindMode);
+    private Task FindNextAsync() => _owner.FindFromDialogAsync(reverse: false);
+
+    [RelayCommand(CanExecute = nameof(HasQuery))]
+    private Task FindPreviousAsync() => _owner.FindFromDialogAsync(reverse: true);
 
     [RelayCommand(CanExecute = nameof(CanReplace))]
     private Task ReplaceAsync() => _owner.ReplaceNextCommand.ExecuteAsync(null);

@@ -6,28 +6,29 @@
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         Title="Font">
-  <StackPanel Margin="16" Spacing="10">
+  <StackPanel Margin="16" Spacing="12" UseLayoutRounding="True">
     <StackPanel>
       <Label Content="_Font" Target="{Binding #FontComboBox}" />
       <ComboBox x:Name="FontComboBox" HorizontalAlignment="Stretch" AutomationProperties.Name="Font family" />
     </StackPanel>
-    <StackPanel Orientation="Horizontal" Spacing="16">
-      <StackPanel>
-        <Label Content="_Size (pt)" Target="{Binding #SizeBox}" />
-        <NumericUpDown x:Name="SizeBox" Minimum="6" Maximum="144" Width="105" AutomationProperties.Name="Size in points" />
-      </StackPanel>
-      <StackPanel VerticalAlignment="Center">
+    <Grid ColumnDefinitions="106,*" RowDefinitions="Auto,Auto" ColumnSpacing="16">
+      <Label Content="_Size (pt)" Target="{Binding #SizeBox}" />
+      <NumericUpDown x:Name="SizeBox" Grid.Row="1" Minimum="6" Maximum="144" AutomationProperties.Name="Size in points" />
+      <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
         <CheckBox x:Name="BoldBox" Content="_Bold" />
         <CheckBox x:Name="ItalicBox" Content="_Italic" />
       </StackPanel>
-    </StackPanel>
+    </Grid>
+    <CheckBox x:Name="LigaturesBox" Content="Font _ligatures"
+              ToolTip.Tip="Combine characters such as != and =&gt; when the font supports programming ligatures." />
     <Border BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
             BorderThickness="1" Padding="8" Height="80" ClipToBounds="True">
-      <TextBlock x:Name="PreviewText" Text="AaBbYyZz 0123" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+      <TextBlock x:Name="PreviewText" Text="AaBbYyZz 0123&#10;!=   =&gt;   -&gt;   ===" VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis" />
     </Border>
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" />
-      <Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />
+    <StackPanel Classes="dialog-actions">
+      <Button Content="OK" Classes="accent" Click="OnOk" IsDefault="True" />
+      <Button Content="Cancel" Click="OnCancel" IsCancel="True" />
     </StackPanel>
   </StackPanel>
 </Window>

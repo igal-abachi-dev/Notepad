@@ -32,6 +32,7 @@ internal static partial class ReleaseSmokeTest
         var editor = window.ViewModel.EditorControl!;
         window.Activate();
         editor.Focus();
+        VerifyWindowsTextInput(window, hwnd);
         editor.LoadDocument("first word\r\nsecond line");
         editor.SetSelection(6, 4);
         nint editorWindow = editor.WindowsAutomationHandle;
@@ -50,8 +51,8 @@ internal static partial class ReleaseSmokeTest
         string printCheck = await VerifyPdfSpoolAsync(directory);
         VerifyImeRequests(window, hwnd);
         VerifySessionEnd(window);
-        return "Windows smoke passed: Jump List link construction, IME geometry and reconversion requests, " +
-            "cancelled sign-out and confirmed sign-out with draft recovery." + Environment.NewLine +
+        return "Windows smoke passed: native text input, IME cancellation, geometry, reconversion, document feed, " +
+            "Jump List link construction, and sign-out with draft recovery." + Environment.NewLine +
             textAutomation + Environment.NewLine + linkedCheck + Environment.NewLine + printCheck;
     }
 
@@ -128,12 +129,44 @@ internal static partial class ReleaseSmokeTest
         return "Microsoft Print to PDF produced multi-page Letter PDFs in portrait and landscape.";
     }
 
+    private static void VerifyWindowsTextInput(MainWindow window, nint hwnd)
+    {
+        const uint characterMessage = 0x0102; // WM_CHAR
+        const uint keyDown = 0x0100;
+        const uint keyUp = 0x0101;
+        var editor = window.ViewModel.EditorControl!;
+        editor.LoadDocument("line\r\nreplace!");
+        editor.SetSelection(13, -7);
+        SendMessageW(hwnd, keyUp, 0xE7, unchecked((nint)0xC0000001)); // VK_PACKET
+        Require(editor.IsFocused, "The editor has focus before native keyboard input.");
+        SendMessageW(hwnd, characterMessage, '\uD83D', 1);
+        Require(editor.GetSelectedText() == "replace" && !editor.IsModified, "A partial character leaves the selection and undo history unchanged.");
+        SendMessageW(hwnd, characterMessage, '\uDE00', 1);
+        Require(editor.Text == "line\r\n\U0001F600!" && editor.CaretOffset == 8,
+            $"Two native WM_CHAR messages insert one supplementary character. Length={editor.TextLength}, caret={editor.CaretOffset}, focused={editor.IsFocused}.");
+        Require(window.ViewModel.CaretLine == 2 && window.ViewModel.CaretColumn == 3,
+            "Native input updates the logical line and column.");
+        editor.Undo();
+        Require(editor.GetSelectedText() == "replace" && editor.CaretOffset == 6 && !editor.IsModified,
+            "One undo restores the old text and the backwards selection.");
+        editor.Redo();
+        SendMessageW(hwnd, keyDown, 8, 0x000E0001); // VK_BACK, make code 0x0E
+        SendMessageW(hwnd, keyUp, 8, unchecked((nint)0xC00E0001));
+        SendMessageW(hwnd, characterMessage, 'x', 1);
+        Require(editor.Text == "line\r\nx!", "Native Backspace removes the whole character, and ordinary typing still works.");
+    }
+
     private static void VerifyImeRequests(MainWindow window, nint hwnd)
     {
         var editor = window.ViewModel.EditorControl!;
         editor.Focus();
-        editor.LoadDocument("\u65e5\u672c suffix");
-        editor.SetSelection(0, 2);
+        const string surrounding = "prefix \u65e5\u672c suffix";
+        editor.LoadDocument(surrounding);
+        editor.SetSelection(9, -2);
+        SendMessageW(hwnd, 0x010D, 0, 0); // WM_IME_STARTCOMPOSITION
+        SendMessageW(hwnd, 0x010E, 0, 0); // WM_IME_ENDCOMPOSITION without a committed result
+        Require(editor.Text == surrounding && editor.SelectionAnchor == 9 && editor.CaretOffset == 7 && !editor.IsModified,
+            "Cancelling a native composition preserves the selected text and its direction.");
         var request = new TextInputMethodClientRequestedEventArgs { RoutedEvent = InputElement.TextInputMethodClientRequestedEvent };
         editor.RaiseEvent(request);
         var client = request.Client!;
@@ -168,6 +201,27 @@ internal static partial class ReleaseSmokeTest
                 editor.SelectionLength == 2, "The IME reconversion request changed the selection or returned the wrong text.");
         }
         finally { Marshal.FreeHGlobal(data); }
+
+        const int documentFeed = 7;
+        int feedBytes = (int)SendMessageW(hwnd, imeRequest, documentFeed, 0);
+        Require(feedBytes == 8 * sizeof(int) + (surrounding.Length + 1) * sizeof(char),
+            "The IME document feed reports the surrounding-text buffer size.");
+        nint feed = Marshal.AllocHGlobal(feedBytes);
+        try
+        {
+            Marshal.WriteInt32(feed, feedBytes - 1);
+            Require(SendMessageW(hwnd, imeRequest, documentFeed, feed) == 0 && Marshal.ReadInt32(feed) == feedBytes - 1,
+                "The IME document feed leaves an undersized buffer untouched.");
+            Marshal.WriteInt32(feed, feedBytes);
+            Require(SendMessageW(hwnd, imeRequest, documentFeed, feed) == feedBytes, "The IME received surrounding text.");
+            int[] header = new int[8];
+            Marshal.Copy(feed, header, 0, header.Length);
+            Require(Marshal.PtrToStringUni(feed + header[3], header[2]) == surrounding &&
+                header[4] == 2 && header[5] == 7 * sizeof(char) && header[6] == 2 && header[7] == header[5] &&
+                editor.SelectionAnchor == 9 && editor.CaretOffset == 7 && !editor.IsModified,
+                "The IME document feed uses byte offsets and preserves editor state.");
+        }
+        finally { Marshal.FreeHGlobal(feed); }
     }
 
     private static void VerifySessionEnd(MainWindow window)

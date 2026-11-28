@@ -44,7 +44,69 @@ public partial class MainWindowViewModel : ObservableObject
     private SearchSettings _searchSettings = new();
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LanguageLabel))]
     private SyntaxLanguage _currentLanguage = SyntaxLanguage.Plain;
+
+    private SyntaxLanguage? _languageOverride;
+    private SyntaxLanguage _untitledLanguage;
+    public string LanguageLabel => LanguageName(CurrentLanguage);
+    public string AutomaticLanguageLabel => $"Automatic ({LanguageName(DetectedLanguage)})";
+    private SyntaxLanguage DetectedLanguage => !Document.IsUntitled ? SyntaxMatcher.DetectLanguage(Document.FilePath) :
+        Document.SuggestedExtension is { } extension ? SyntaxMatcher.DetectLanguage(extension) : _untitledLanguage;
+
+    private static string LanguageName(SyntaxLanguage language) => language switch
+    {
+        SyntaxLanguage.Plain => "Plain Text",
+        SyntaxLanguage.CSharp => "C#",
+        SyntaxLanguage.JavaScript => "JavaScript",
+        SyntaxLanguage.Json => "JSON",
+        SyntaxLanguage.Xml => "XML",
+        SyntaxLanguage.Html => "HTML",
+        SyntaxLanguage.Sql => "SQL",
+        SyntaxLanguage.Cpp => "C++",
+        SyntaxLanguage.Css => "CSS",
+        SyntaxLanguage.Ini => "INI",
+        SyntaxLanguage.Toml => "TOML",
+        SyntaxLanguage.Yaml => "YAML",
+        SyntaxLanguage.Log => "Structured Log",
+        _ => language.ToString()
+    };
+
+    [RelayCommand]
+    private void SetLanguage(SyntaxLanguage? language)
+    {
+        if (language is { } choice && !Enum.IsDefined(choice)) return;
+        _languageOverride = language;
+        RefreshLanguage();
+    }
+
+    partial void OnDocumentChanged(DocumentModel value)
+    {
+        StopFollowingFile();
+        _languageOverride = null;
+        _untitledLanguage = SyntaxLanguage.Plain;
+        RefreshLanguage();
+        _artWordWrap = null;
+        _artFontFamily = null;
+        NotifyEditorAppearance();
+        UpdateRunScriptAvailability();
+    }
+
+    private void RefreshLanguage()
+    {
+        CurrentLanguage = _languageOverride ?? DetectedLanguage;
+        OnPropertyChanged(nameof(AutomaticLanguageLabel));
+        NotifyCommentAvailability();
+    }
+
+    private void UpdateUntitledLanguage()
+    {
+        if (Document is not { IsUntitled: true, SuggestedExtension: null } || EditorControl is not { } editor) return;
+        var language = SyntaxMatcher.DetectUntitledLanguage(editor.GetTextPrefix(256));
+        if (language == _untitledLanguage) return;
+        _untitledLanguage = language;
+        RefreshLanguage();
+    }
 
     [ObservableProperty]
     private PageSetupSettings _pageSetupSettings = new();
@@ -111,18 +173,24 @@ public partial class MainWindowViewModel : ObservableObject
         editor.CaretMoved += OnEditorCaretMoved;
         editor.ZoomRequested += OnEditorZoomRequested;
         editor.WebLinkRequested += OnEditorWebLinkRequested;
+        editor.ScrollInvalidated += OnSearchViewportChanged;
         ResetEditor(_loadedContent);
+        NotifyEditingAvailability();
     }
 
     internal void DetachEditor()
     {
         if (EditorControl is not { } editor) return;
+        StopFollowingFile();
         _loadedContent = editor.GetText();
         editor.TextChanged -= OnEditorTextChanged;
         editor.CaretMoved -= OnEditorCaretMoved;
         editor.ZoomRequested -= OnEditorZoomRequested;
         editor.WebLinkRequested -= OnEditorWebLinkRequested;
+        editor.ScrollInvalidated -= OnSearchViewportChanged;
+        StopSearchPreview();
         EditorControl = null;
+        NotifyEditingAvailability();
     }
 
     private void ResetEditor(string content)
@@ -140,6 +208,7 @@ public partial class MainWindowViewModel : ObservableObject
         EditorControl.WindowsOnlyLineEndings = Settings.WindowsOnlyLineEndings;
         var restored = _pendingDraftSelection;
         EditorControl.LoadDocument(content, restoredDraft: restored != null || (Document.IsUntitled && Document.IsModified));
+        UpdateUntitledLanguage();
         if (restored != null)
         {
             _pendingDraftSelection = null;
@@ -153,6 +222,7 @@ public partial class MainWindowViewModel : ObservableObject
             _pendingLogAppend = null;
             EditorControl.ReplaceRange(content.Length, 0, append);
         }
+        QueueSearchPreview();
     }
 
     private void OnEditorCaretMoved(object? sender, (int Line, int Column) position)
@@ -161,7 +231,10 @@ public partial class MainWindowViewModel : ObservableObject
         CutCommand.NotifyCanExecuteChanged();
         CopyCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
-        SearchWithBingCommand.NotifyCanExecuteChanged();
+        OpenSelectionInBrowserCommand.NotifyCanExecuteChanged();
+        CopySelectionToNewWindowCommand.NotifyCanExecuteChanged();
+        NotifyCommentAvailability();
+        OnPropertyChanged(nameof(HasTextSelection));
         UndoCommand.NotifyCanExecuteChanged();
         RedoCommand.NotifyCanExecuteChanged();
     }
@@ -169,15 +242,22 @@ public partial class MainWindowViewModel : ObservableObject
     private void OnEditorTextChanged(object? sender, EventArgs e)
     {
         _editVersion++;
-        if (EditorControl is { } editor && Document.IsModified != editor.IsModified)
-        {
-            Document.IsModified = editor.IsModified;
-            OnPropertyChanged(nameof(Document));
-        }
+        UpdateUntitledLanguage();
+        UpdateDocumentModified();
         if (!Settings.WindowsOnlyLineEndings && EditorControl is { } active)
             SetDocumentLineEnding(active.NewLine);
         ScheduleDraftCheckpoint();
         UpdateStatus();
+        QueueSearchPreview();
+    }
+
+    private void UpdateDocumentModified()
+    {
+        if (EditorControl is not { } editor) return;
+        bool modified = editor.IsModified || Document.EncodingType != Document.SaveEncodingType;
+        if (Document.IsModified == modified) return;
+        Document.IsModified = modified;
+        OnPropertyChanged(nameof(Document));
     }
 
     private void OnEditorZoomRequested(object? sender, int direction) => SetZoom(Settings.ZoomLevel + direction * 10);
@@ -231,9 +311,14 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// Maps to: Command ID 769 (WM_CUT)
     /// </summary>
-    private bool HasSelection() => EditorControl?.SelectionLength > 0;
+    private bool HasSelection() => EditorControl?.HasTextSelection == true;
 
-    [RelayCommand(CanExecute = nameof(HasSelection))]
+    public bool HasTextSelection => HasSelection();
+
+    private bool CanEditSelection() => !IsEditorReadOnly && HasSelection();
+    private bool CanPaste() => !IsEditorReadOnly && EditorControl != null;
+
+    [RelayCommand(CanExecute = nameof(CanEditSelection))]
     private Task CutAsync() => RunClipboardCommandAsync(editor => editor.CutAsync());
 
     /// <summary>
@@ -245,7 +330,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// Maps to: Command ID 771 (WM_PASTE)
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanPaste))]
     private Task PasteAsync() => RunClipboardCommandAsync(editor => editor.PasteAsync());
 
     private async Task RunClipboardCommandAsync(Func<NeoEditor, Task> operation)
@@ -265,7 +350,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// Maps to: Command ID 20
     /// </summary>
-    [RelayCommand(CanExecute = nameof(HasSelection))]
+    [RelayCommand(CanExecute = nameof(CanEditSelection))]
     private void Delete()
     {
         EditorControl?.DeleteSelection();
@@ -284,6 +369,21 @@ public partial class MainWindowViewModel : ObservableObject
     private void InsertDateTime()
     {
         EditorControl?.InsertAtCaret(FormatTimeDate(_timeProvider.GetLocalNow().DateTime));
+    }
+
+    [RelayCommand]
+    private void InsertGuid()
+    {
+        EditorControl?.InsertAtCaret(Guid.NewGuid().ToString("D"));
+    }
+
+    [RelayCommand]
+    private void ReplaceNulsWithSpaces()
+    {
+        if (EditorControl is not { IsReadOnly: false } editor) return;
+        bool replaced = editor.ReplaceNulsWithSpaces();
+        UpdateStatus();
+        StatusText += replaced ? "    Replaced NUL characters with spaces." : "    No NUL characters found.";
     }
 
     // ==================== Find/Replace ====================
@@ -368,81 +468,114 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
-    internal Task FindFromDialogAsync(bool findMode) => FindCoreAsync(findMode && SearchSettings.SearchUp);
+    internal Task FindFromDialogAsync(bool reverse) => FindCoreAsync(reverse);
 
     private Task FindCoreAsync(bool reverse) => RunSearchAsync(editor =>
     {
-        UpdateStatus();
         var (result, wrapped) = reverse
             ? _searchService.FindPrevious(editor, SearchSettings)
             : _searchService.FindNext(editor, SearchSettings);
 
         if (result != null)
         {
-            editor.SetSelection(result.StartOffset, result.Length);
-            if (wrapped) StatusText += reverse ? "    Search wrapped to bottom" : "    Search wrapped to top";
-            return Task.CompletedTask;
+            if (SearchSettings.HighlightMatches) editor.SelectSearchMatch(result.StartOffset, result.Length);
+            else editor.SetSelection(result.StartOffset, result.Length);
+            if (wrapped) ReportSearchFeedback(reverse ? "Search wrapped to bottom." : "Search wrapped to top.");
+            return;
         }
 
-        return ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
+        editor.ClearActiveSearchMatch();
+        ReportSearchFeedback("No matches found.");
     });
 
     [RelayCommand]
-    private Task ReplaceNext() => RunSearchAsync(async editor =>
+    private Task ReplaceNext() => RunSearchAsync(editor =>
     {
-        UpdateStatus();
-        int replaced = _searchService.ReplaceNext(editor, SearchSettings, out bool found, out bool wrapped);
-        if (wrapped) StatusText += "    Search wrapped";
-        if (replaced == 0 && !found)
-            await ShowErrorAsync($"Cannot find \"{SearchSettings.SearchString}\"");
+        if (editor.IsReadOnly) { ReportSearchFeedback("Read-only mode is on."); return; }
+        int replaced = _searchService.ReplaceNext(editor, SearchSettings, out bool found, out bool wrapped,
+            out bool followUpTimedOut);
+        if (followUpTimedOut)
+            ReportSearchFeedback("Replaced the current match. The search for the next match took too long.");
+        else if (replaced == 0 && !found)
+            ReportSearchFeedback("No matches found.");
+        else if (wrapped)
+            ReportSearchFeedback("Search wrapped.");
     });
 
     [RelayCommand]
-    private Task ReplaceAll() => RunSearchAsync(async editor =>
+    private Task ReplaceAll() => RunSearchAsync(editor =>
     {
+        if (editor.IsReadOnly) { ReportSearchFeedback("Read-only mode is on."); return; }
         int count = _searchService.ReplaceAll(editor, SearchSettings);
-        await ShowMessageAsync("Notepad", $"Replaced {count} occurrence(s).", MessageButtons.Ok);
+        ReportSearchFeedback(count switch
+        {
+            0 => "No matches found.",
+            1 => "Replaced 1 occurrence.",
+            _ => $"Replaced {count} occurrences."
+        });
     });
 
-    private async Task RunSearchAsync(Func<NeoEditor, Task> operation)
+    private Task RunSearchAsync(Action<NeoEditor> operation)
     {
-        if (EditorControl is not { } editor || string.IsNullOrEmpty(SearchSettings.SearchString)) return;
+        if (EditorControl is not { } editor || string.IsNullOrEmpty(SearchSettings.SearchString)) return Task.CompletedTask;
 
+        UpdateStatus();
+        ReportSearchFeedback(null);
         try
         {
-            await operation(editor);
+            operation(editor);
         }
         catch (RegexParseException ex)
         {
-            await ShowErrorAsync($"Invalid regular expression. {ex.Message}");
+            ReportSearchFeedback($"Invalid regular expression. {ex.Message}");
         }
         catch (RegexMatchTimeoutException)
         {
-            await ShowErrorAsync("The regular expression took too long. Try a simpler pattern.");
+            ReportSearchFeedback("The regular expression took too long. Try a simpler pattern.");
         }
         catch (ArgumentException ex)
         {
-            await ShowErrorAsync($"Cannot apply the search replacement. {ex.Message}");
+            ReportSearchFeedback($"Cannot apply the search replacement. {ex.Message}");
         }
+        finally
+        {
+            QueueSearchPreview();
+        }
+        return Task.CompletedTask;
     }
 
-    public bool CanUseGoToLine => !Settings.WordWrap;
+    private void ReportSearchFeedback(string? message)
+    {
+        if (_findReplaceDialog?.DataContext is FindReplaceViewModel dialog)
+            dialog.SearchFeedback = message;
+        if (message != null)
+            StatusText += $"    {message}";
+    }
+
+    private bool? _artWordWrap;
+    private string? _artFontFamily;
+    private bool ShowAnsiArt => !Document.IsUntitled && DocumentPath.IsAnsiArt(Document.FilePath);
+    public bool EditorWordWrap => ShowAnsiArt ? _artWordWrap ?? false : Settings.WordWrap;
+    public string EditorFontFamily => ShowAnsiArt ? _artFontFamily ?? "Consolas, Lucida Console, DejaVu Sans Mono, Menlo, monospace" : Settings.FontFamily;
+    public bool CanUseGoToLine => !EditorWordWrap;
 
     partial void OnSettingsChanged(EditorSettings? oldValue, EditorSettings newValue)
     {
         if (oldValue != null) oldValue.PropertyChanged -= OnEditorSettingsPropertyChanged;
         newValue.PropertyChanged += OnEditorSettingsPropertyChanged;
-        NotifyGoToLineAvailability();
+        NotifyEditorAppearance();
     }
 
     private void OnEditorSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(EditorSettings.WordWrap))
-            NotifyGoToLineAvailability();
+        if (e.PropertyName is nameof(EditorSettings.WordWrap) or nameof(EditorSettings.FontFamily))
+            NotifyEditorAppearance();
     }
 
-    private void NotifyGoToLineAvailability()
+    private void NotifyEditorAppearance()
     {
+        OnPropertyChanged(nameof(EditorWordWrap));
+        OnPropertyChanged(nameof(EditorFontFamily));
         OnPropertyChanged(nameof(CanUseGoToLine));
         GoToLineCommand.NotifyCanExecuteChanged();
     }
@@ -483,7 +616,11 @@ public partial class MainWindowViewModel : ObservableObject
             _findReplaceDialog.FocusQuery();
             return;
         }
-        if (seed != null) SearchSettings.SearchString = seed;
+        if (seed != null)
+        {
+            SearchSettings.SearchString = seed;
+            RefreshSearchPreview();
+        }
         if (_findReplaceDialog != null)
         {
             _findReplaceDialog.DataContext = new FindReplaceViewModel(this, findMode);
@@ -493,8 +630,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         _findReplaceDialog = new FindReplaceDialog(this, findMode);
-        _findReplaceDialog.Closed += (_, _) => _findReplaceDialog = null;
+        _findReplaceDialog.Closed += (_, _) =>
+        {
+            _findReplaceDialog = null;
+            StopSearchPreview();
+        };
         _findReplaceDialog.Show(owner);
+        QueueSearchPreview();
     }
 
     // ==================== Format Commands ====================
@@ -505,9 +647,22 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ToggleWordWrap()
     {
+        if (ShowAnsiArt)
+        {
+            _artWordWrap = !EditorWordWrap;
+            NotifyEditorAppearance();
+            return;
+        }
         Settings.WordWrap = !Settings.WordWrap;
 
         OnPropertyChanged(nameof(Settings));
+        PersistSettings();
+    }
+
+    [RelayCommand]
+    private void ToggleAutoIndent()
+    {
+        Settings.AutoIndent = !Settings.AutoIndent;
         PersistSettings();
     }
 
@@ -522,14 +677,17 @@ public partial class MainWindowViewModel : ObservableObject
         var result = await dialog.ShowDialog<bool>(GetMainWindow());
         if (result)
         {
-            Settings.FontFamily = dialog.SelectedFamily;
+            if (ShowAnsiArt) _artFontFamily = dialog.SelectedFamily;
+            else Settings.FontFamily = dialog.SelectedFamily;
             Settings.FontSize = dialog.SelectedSize;
             Settings.IsBold = dialog.IsBold;
             Settings.IsItalic = dialog.IsItalic;
+            Settings.EnableFontLigatures = dialog.EnableFontLigatures;
             OnPropertyChanged(nameof(Settings));
             OnPropertyChanged(nameof(EditorFontSize));
             OnPropertyChanged(nameof(EditorFontWeight));
             OnPropertyChanged(nameof(EditorFontStyle));
+            NotifyEditorAppearance();
             PersistSettings();
         }
     }
@@ -567,7 +725,6 @@ public partial class MainWindowViewModel : ObservableObject
     private void ToggleUnicodeControls()
     {
         Settings.ShowUnicodeControls = !Settings.ShowUnicodeControls;
-        OnPropertyChanged(nameof(Settings));
         PersistSettings();
     }
 
@@ -643,21 +800,10 @@ public partial class MainWindowViewModel : ObservableObject
 
     // ==================== Help Commands ====================
 
-    [RelayCommand]
-    private Task ViewHelp() => LaunchAsync("https://go.microsoft.com/fwlink/?LinkId=834783");
-
-    public bool IsFeedbackAvailable => OperatingSystem.IsWindows();
+    internal const string ProjectWebsite = "https://github.com/igal-abachi-dev/Notepad";
 
     [RelayCommand]
-    private Task SendFeedback() => LaunchAsync("feedback-hub://?tabid=2&contextid=1010");
-
-    [RelayCommand(CanExecute = nameof(HasSelection))]
-    private Task SearchWithBing()
-    {
-        if (EditorControl is not { } editor || !HasSelection()) return Task.CompletedTask;
-        if (editor.SelectionLength > 2048) return ShowErrorAsync("Select up to 2,048 characters to search the web.");
-        return LaunchAsync("https://www.bing.com/search?q=" + Uri.EscapeDataString(editor.GetSelectedText()));
-    }
+    private Task ViewHelp() => LaunchAsync(ProjectWebsite);
 
     private async Task LaunchAsync(string address)
     {
@@ -684,13 +830,14 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateEncodingDisplay()
     {
-        EncodingText = Document.EncodingType switch
+        EncodingText = Document.SaveEncodingType switch
         {
             FileEncodingType.ANSI => "Windows (ANSI)",
             FileEncodingType.UTF16LE => "Unicode",
             FileEncodingType.UTF16BE => "Unicode big endian",
             FileEncodingType.UTF8BOM => "UTF-8 with BOM",
             FileEncodingType.UTF8 => "UTF-8",
+            FileEncodingType.OEM437 => "OEM 437 (DOS / NFO)",
             _ => Document.Encoding.WebName.ToUpperInvariant()
         };
         LineEndingText = Document.LineEnding switch
@@ -703,8 +850,11 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateStatus()
     {
-        var lines = EditorControl?.LineCount ?? 1;
-        StatusText = $"Ln {CaretLine}, Col {CaretColumn}    Lines: {lines}";
+        int lines = EditorControl?.LineCount ?? 1;
+        int position = EditorControl?.CaretOffset ?? 0;
+        StatusText = $"Ln {CaretLine}, Col {CaretColumn} lines:{lines} (Pos {position})";
+        if (IsFollowingLog) StatusText += "    Tailing file";
+        else if (IsReadOnlyMode) StatusText += "    Read-only";
     }
 
     public void SaveWindowPlacement(PixelPoint position, Size size)

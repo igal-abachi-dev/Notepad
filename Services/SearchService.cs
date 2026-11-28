@@ -1,16 +1,20 @@
 ﻿using Notepad.NeoEdit;
 using NotepadAvalonia.Models;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace NotepadAvalonia.Services;
 
 public class SearchService
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan PreviewTimeout = TimeSpan.FromMilliseconds(50);
+    internal const int PreviewContextLength = 4096;
     private ZeroWidthMatch? _lastZeroWidthMatch;
 
     private sealed record ZeroWidthMatch(NeoEditor Editor, long Version, long SelectionVersion, int Offset, string Query,
@@ -58,9 +62,14 @@ public class SearchService
     public int ReplaceNext(NeoEditor editor, SearchSettings settings) =>
         ReplaceNext(editor, settings, out _, out _);
 
-    public int ReplaceNext(NeoEditor editor, SearchSettings settings, out bool found, out bool wrapped)
+    public int ReplaceNext(NeoEditor editor, SearchSettings settings, out bool found, out bool wrapped) =>
+        ReplaceNext(editor, settings, out found, out wrapped, out _);
+
+    internal int ReplaceNext(NeoEditor editor, SearchSettings settings, out bool found, out bool wrapped,
+        out bool followUpTimedOut)
     {
-        found = wrapped = false;
+        found = wrapped = followUpTimedOut = false;
+        if (editor.IsReadOnly) return 0;
         string query = settings.SearchString;
         if (string.IsNullOrEmpty(query)) return 0;
 
@@ -77,12 +86,12 @@ public class SearchService
             selected = match.Success && match.Index == start && match.Length == length &&
                 (length > 0 || _lastZeroWidthMatch == key) &&
                 IsEligible(text, start, length, settings.WholeWord, protectCrLf: true);
-            if (selected) replacement = match.Result(replacement);
+            if (selected) replacement = match.Result(ExpandReplacementEscapes(replacement));
         }
         else
         {
             selected = length > 0 &&
-                new LiteralSearch(settings).Matches(text.AsSpan(start, length)) &&
+                new LiteralSearch(settings).Matches(text.AsSpan(start), length) &&
                 IsEligible(text, start, length, settings.WholeWord, protectCrLf: true);
         }
 
@@ -97,15 +106,26 @@ public class SearchService
             }
         }
 
-        var (next, didWrap) = FindNext(editor, settings);
+        SearchResult? next;
+        try { (next, wrapped) = FindNext(editor, settings); }
+        catch (RegexMatchTimeoutException) when (selected)
+        {
+            followUpTimedOut = true;
+            return 1;
+        }
         found = next != null;
-        wrapped = didWrap;
-        if (next != null) editor.SetSelection(next.StartOffset, next.Length);
+        if (next != null)
+        {
+            if (settings.HighlightMatches) editor.SelectSearchMatch(next.StartOffset, next.Length);
+            else editor.SetSelection(next.StartOffset, next.Length);
+        }
+        else editor.ClearActiveSearchMatch();
         return selected ? 1 : 0;
     }
 
     public int ReplaceAll(NeoEditor editor, SearchSettings settings)
     {
+        if (editor.IsReadOnly) return 0;
         string query = settings.SearchString;
         if (string.IsNullOrEmpty(query)) return 0;
 
@@ -130,12 +150,13 @@ public class SearchService
         if (settings.UseRegex)
         {
             var regex = CreateRegex(settings, forward: true);
+            string replacement = ExpandReplacementEscapes(settings.ReplaceString);
             long started = Stopwatch.GetTimestamp();
             for (var match = regex.Match(text); match.Success; match = match.NextMatch())
             {
                 CheckTimeout(started, text, regex);
                 if (IsEligible(text, match.Index, match.Length, settings.WholeWord, protectCrLf: match.Length == 0))
-                    AppendReplacement(match.Index, match.Length, match.Result(settings.ReplaceString));
+                    AppendReplacement(match.Index, match.Length, match.Result(replacement));
             }
         }
         else
@@ -155,6 +176,63 @@ public class SearchService
         result.Append(text, copied, text.Length - copied);
         editor.ReplaceRange(0, text.Length, result.ToString(), newCaret);
         return count;
+    }
+
+    private static string ExpandReplacementEscapes(string replacement)
+    {
+        if (!replacement.Contains('\\')) return replacement;
+        var expanded = new StringBuilder(replacement.Length);
+        for (int i = 0; i < replacement.Length; i++)
+        {
+            char current = replacement[i];
+            if (current == '\\' && i + 1 < replacement.Length)
+            {
+                char next = replacement[i + 1];
+                if (next is 'r' or 'n' or 't' or '\\')
+                {
+                    current = next switch { 'r' => '\r', 'n' => '\n', 't' => '\t', _ => '\\' };
+                    i++;
+                }
+            }
+            expanded.Append(current);
+        }
+        return expanded.ToString();
+    }
+
+    internal static IReadOnlyList<(int Start, int Length)> FindPreviewMatches(string text, SearchSettings settings,
+        int start, int end, int baseOffset, CancellationToken cancellationToken)
+    {
+        var matches = new List<(int Start, int Length)>();
+        if (string.IsNullOrEmpty(settings.SearchString) || settings.SearchString.Length > PreviewContextLength) return matches;
+
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            var regex = settings.UseRegex ? CreateRegex(settings, forward: true, timeout: PreviewTimeout) : null;
+            var literal = regex == null ? new LiteralSearch(settings) : default;
+            int context = settings.UseRegex ? PreviewContextLength :
+                (int)Math.Clamp((long)settings.SearchString.Length * 2, 32, PreviewContextLength);
+            int searchEnd = (int)Math.Min(text.Length, (long)end + context);
+            for (int offset = Math.Max(0, start - context); offset <= end && matches.Count < 512;)
+            {
+                if (cancellationToken.IsCancellationRequested || Stopwatch.GetElapsedTime(started) >= PreviewTimeout)
+                    break;
+                var match = regex != null
+                    ? FindInRange(text, settings, regex, offset, text.Length, forward: true, excludedZeroWidth: null)
+                    : FindLiteral(text, literal, offset, searchEnd, forward: true, settings.WholeWord, protectCrLf: true);
+                if (match == null || match.StartOffset > end ||
+                    (match.StartOffset == end && (match.Length != 0 || end < text.Length))) break;
+                if (match.Length == 0 ? match.StartOffset >= start : match.StartOffset + match.Length > start)
+                    matches.Add((match.StartOffset + baseOffset, match.Length));
+                if (match.StartOffset == text.Length) break;
+                offset = match.StartOffset + Math.Max(1, match.Length);
+            }
+        }
+        catch (Exception ex) when (ex is RegexParseException or RegexMatchTimeoutException)
+        {
+            // Preview is optional. Explicit search still reports invalid or slow patterns.
+        }
+        return matches;
     }
 
     private static SearchResult? FindInRange(string text, SearchSettings settings, Regex? regex,
@@ -191,7 +269,8 @@ public class SearchService
             int offset = literal.Find(text.AsSpan(start, end - start), forward, out int length);
             if (offset < 0 || length == 0) break;
             int index = start + offset;
-            if (literal.CanConsume(text.AsSpan(index, length)) && IsEligible(text, index, length, wholeWord, protectCrLf))
+            if ((forward || literal.ValidateBackwardLength(text.AsSpan(index, end - index), ref length)) &&
+                literal.CanConsume(text.AsSpan(index), length) && IsEligible(text, index, length, wholeWord, protectCrLf))
                 return new(index, length);
 
             if (forward) start = index + 1;
@@ -201,17 +280,17 @@ public class SearchService
         return null;
     }
 
-    private static Regex CreateRegex(SearchSettings settings, bool forward)
+    private static Regex CreateRegex(SearchSettings settings, bool forward, TimeSpan? timeout = null)
     {
         var options = settings.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
         if (!forward) options |= RegexOptions.RightToLeft;
-        return new(settings.SearchString, options, RegexTimeout);
+        return new(settings.SearchString, options, timeout ?? RegexTimeout);
     }
 
     private static void CheckTimeout(long started, string text, Regex regex)
     {
-        if (Stopwatch.GetElapsedTime(started) >= RegexTimeout)
-            throw new RegexMatchTimeoutException(text, regex.ToString(), RegexTimeout);
+        if (Stopwatch.GetElapsedTime(started) >= regex.MatchTimeout)
+            throw new RegexMatchTimeoutException(text, regex.ToString(), regex.MatchTimeout);
     }
 
     private readonly struct LiteralSearch
@@ -226,9 +305,8 @@ public class SearchService
             _query = settings.SearchString;
             _compare = CultureInfo.CurrentCulture.CompareInfo;
             var linguisticOptions = settings.MatchCase ? CompareOptions.None : CompareOptions.IgnoreCase;
-            // Collation can ignore control and formatting characters. A query for those
-            // characters should still search for the actual text and consume it on a hit.
-            _ordinal = ContainsLiteralControl(_query) || _compare.Compare(_query, "", linguisticOptions) == 0;
+            // Queries that explicitly name protected characters must match the actual text.
+            _ordinal = ContainsProtectedCharacter(_query) || _compare.Compare(_query, "", linguisticOptions) == 0;
             _options = _ordinal ? (settings.MatchCase ? CompareOptions.Ordinal : CompareOptions.OrdinalIgnoreCase) : linguisticOptions;
         }
 
@@ -236,16 +314,40 @@ public class SearchService
             forward ? _compare.IndexOf(text, _query, _options, out length)
                 : _compare.LastIndexOf(text, _query, _options, out length);
 
-        public bool Matches(ReadOnlySpan<char> text) => CanConsume(text) && _compare.Compare(text, _query, _options) == 0;
+        public bool Matches(ReadOnlySpan<char> text, int length) =>
+            CanConsume(text, length) && ComparesEqual(text[..length]);
 
-        public bool CanConsume(ReadOnlySpan<char> text) => _ordinal || !ContainsLiteralControl(text);
-
-        private static bool ContainsLiteralControl(ReadOnlySpan<char> text)
+        public bool ValidateBackwardLength(ReadOnlySpan<char> candidate, ref int length)
         {
-            foreach (char character in text)
-                if (char.IsControl(character) || char.GetUnicodeCategory(character) == UnicodeCategory.Format) return true;
+            if (_ordinal || ComparesEqual(candidate[..length])) return true;
+
+            // A reverse ICU match can report only the first code unit of a contraction.
+            // Confirm its length from the same start within the original search window.
+            if (!_compare.IsPrefix(candidate, _query, _options, out int verifiedLength) ||
+                verifiedLength == 0 || !ComparesEqual(candidate[..verifiedLength])) return false;
+            length = verifiedLength;
+            return true;
+        }
+
+        private bool ComparesEqual(ReadOnlySpan<char> text) => _compare.Compare(text, _query, _options) == 0;
+
+        public bool CanConsume(ReadOnlySpan<char> text, int length)
+        {
+            if (_ordinal) return true;
+            Rune.DecodeFromUtf16(text[length..], out var following, out _);
+            return !IsVariationSelector(following) && !ContainsProtectedCharacter(text[..length]);
+        }
+
+        private static bool ContainsProtectedCharacter(ReadOnlySpan<char> text)
+        {
+            foreach (var character in text.EnumerateRunes())
+                if (Rune.GetUnicodeCategory(character) is UnicodeCategory.Control or UnicodeCategory.Format ||
+                    character.Value == 0x034F || IsVariationSelector(character)) return true;
             return false;
         }
+
+        private static bool IsVariationSelector(Rune character) => character.Value is
+            >= 0x180B and <= 0x180D or 0x180F or >= 0xFE00 and <= 0xFE0F or >= 0xE0100 and <= 0xE01EF;
     }
 
     private static bool IsEligible(string text, int start, int length, bool wholeWord, bool protectCrLf)

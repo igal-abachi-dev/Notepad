@@ -126,5 +126,5 @@ internal sealed partial class Provider(nint window, EditorDocument document) :
     public void SetValue(nint value) =>
         Call(current => { current.SetText(Marshal.PtrToStringUni(value) ?? ""); return 0; });
     public nint GetValue() => Call(current => Marshal.StringToBSTR(current.GetText(new(0, current.Length))));
-    public int GetIsReadOnly() => Call(current => current.IsEnabled ? 0 : 1);
+    public int GetIsReadOnly() => Call(current => current.IsReadOnly ? 1 : 0);
 }

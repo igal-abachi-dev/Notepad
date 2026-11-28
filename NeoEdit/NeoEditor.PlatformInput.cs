@@ -45,7 +45,7 @@ public sealed partial class NeoEditor
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
         protected override bool IsControlElementCore() => editor.WindowsAutomationHandle == 0 && base.IsControlElementCore();
         protected override bool IsContentElementCore() => editor.WindowsAutomationHandle == 0 && base.IsContentElementCore();
-        public bool IsReadOnly => !editor.IsEffectivelyEnabled;
+        public bool IsReadOnly => editor.IsReadOnly || !editor.IsEffectivelyEnabled;
         public string Value
         {
             get
@@ -59,7 +59,7 @@ public sealed partial class NeoEditor
 
         public void SetValue(string? value)
         {
-            if (IsReadOnly) throw new InvalidOperationException("The editor is disabled.");
+            if (IsReadOnly) throw new InvalidOperationException("The editor cannot accept text.");
             editor.ReplaceRange(0, editor._doc.Length, value ?? "");
         }
 
@@ -109,7 +109,7 @@ public sealed partial class NeoEditor
         const int reconvertString = 4; // IMR_RECONVERTSTRING
         const int queryCharacterPosition = 6; // IMR_QUERYCHARPOSITION
         const int documentFeed = 7; // IMR_DOCUMENTFEED
-        if (!IsFocused) return 0;
+        if (IsReadOnly || !IsFocused) return 0;
         if (request == reconvertString || request == documentFeed)
         {
             handled = true;
@@ -203,7 +203,7 @@ public sealed partial class NeoEditor
         InvalidateVisual();
     }
 
-    private TextLayout MakeCompositionLayout() => new(_preeditText, Typeface, FontSize, Foreground,
+    private TextLayout MakeCompositionLayout() => new(_preeditText, Typeface, ShapingFeatures, FontSize, Foreground,
         textDecorations: TextDecorations.Underline, flowDirection: DirectionOf(_preeditText), lineHeight: LineHeight);
 
     private void DrawComposition(DrawingContext context, Point origin)
@@ -234,7 +234,9 @@ public sealed partial class NeoEditor
     {
         public override Visual TextViewVisual => editor;
         public override bool SupportsPreedit => true;
-        public override bool SupportsSurroundingText => true;
+        // Avalonia's Windows IMM32 backend sends Delete for a reported selection when composition starts.
+        // Keep the selection until commit. Windows gets surrounding text through IMR_DOCUMENTFEED.
+        public override bool SupportsSurroundingText => !OperatingSystem.IsWindows();
 
         public (int Start, int End) Context
         {
@@ -279,6 +281,7 @@ public sealed partial class NeoEditor
 
         public override void SetPreeditText(string? text, int? cursor)
         {
+            if (editor.IsReadOnly) return;
             editor.SetComposition(text, cursor);
             RaiseCursorRectangleChanged();
         }

@@ -6,14 +6,14 @@
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         Title="Go To Line">
-  <StackPanel Margin="12" Spacing="10">
+  <StackPanel Margin="16" Spacing="12" UseLayoutRounding="True">
     <TextBlock x:Name="InfoText" AutomationProperties.AutomationId="LineRange" />
     <TextBox x:Name="LineNumberTextBox"
              AutomationProperties.Name="Line number" AutomationProperties.AutomationId="LineNumber" />
-    <TextBlock x:Name="ValidationMessage" IsVisible="False" />
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,6,0,0">
-      <Button Content="_Go To" Click="OnGoTo" MinWidth="80" IsDefault="True" AutomationProperties.AutomationId="GoToAccept" />
-      <Button Content="Cancel" Click="OnCancel" MinWidth="80" IsCancel="True" />
+    <TextBlock x:Name="ValidationMessage" IsVisible="False" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+    <StackPanel Classes="dialog-actions">
+      <Button Content="_Go To" Classes="accent" Click="OnGoTo" IsDefault="True" AutomationProperties.AutomationId="GoToAccept" />
+      <Button Content="Cancel" Click="OnCancel" IsCancel="True" />
     </StackPanel>
   </StackPanel>
 </Window>

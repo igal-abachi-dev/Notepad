@@ -1,4 +1,5 @@
 using NotepadAvalonia.Models;
+using System.IO;
 using Xunit;
 
 namespace Notepad.Tests;
@@ -24,7 +25,7 @@ public class DocumentModelTests
         {
             IsUntitled = false,
             IsModified = false,
-            FilePath = @"C:\temp\notes.txt"
+            FilePath = Path.Combine("temp", "notes.txt")
         };
 
         Assert.Equal("notes.txt - Notepad", model.WindowTitle);

@@ -21,7 +21,7 @@ internal sealed partial class TextRange(Provider provider, TextSpan span) : ITex
 
     public nint FindAttribute(int attribute, NativeVariant value, int backward) =>
         provider.Call(document => attribute == 40015 && value.Type == 11 &&
-            (value.Value != 0) == !document.IsEnabled ? provider.Range(_span) : 0);
+            (value.Value != 0) == document.IsReadOnly ? provider.Range(_span) : 0);
 
     public nint FindText(nint text, int backward, int ignoreCase) => provider.Call(document =>
     {
@@ -37,7 +37,7 @@ internal sealed partial class TextRange(Provider provider, TextSpan span) : ITex
     {
         provider.Call(document =>
         {
-            if (attribute == 40015) Native.SetBoolean(variant, !document.IsEnabled); // IsReadOnly
+            if (attribute == 40015) Native.SetBoolean(variant, document.IsReadOnly); // IsReadOnly
             else Native.SetUnsupported(variant);
             return 0;
         });

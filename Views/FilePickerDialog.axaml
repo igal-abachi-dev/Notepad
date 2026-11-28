@@ -3,24 +3,43 @@
         xmlns:local="using:NotepadAvalonia.Views"
         x:Class="NotepadAvalonia.Views.FilePickerDialog"
         Width="730" Height="510" MinWidth="545" MinHeight="365"
-        ShowInTaskbar="False" WindowStartupLocation="CenterOwner">
-  <Grid Margin="16" RowDefinitions="Auto,*,Auto,Auto,Auto" RowSpacing="10">
+        ShowInTaskbar="False" WindowStartupLocation="CenterOwner" KeyDown="OnPickerKeyDown">
+  <Grid Margin="16" RowDefinitions="Auto,*,Auto,Auto,Auto" RowSpacing="10" UseLayoutRounding="True">
     <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="6">
-      <Button x:Name="BackButton" Content="_Back" Click="OnBack" />
-      <Button x:Name="UpButton" Grid.Column="1" Content="_Up" Click="OnUp" />
+      <Grid.Styles>
+        <Style Selector="Button">
+          <Setter Property="MinHeight" Value="32" />
+          <Setter Property="HorizontalContentAlignment" Value="Center" />
+          <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+      </Grid.Styles>
+      <Button x:Name="BackButton" Content="_Back" Click="OnBack" MinWidth="56" />
+      <Button x:Name="UpButton" Grid.Column="1" Content="_Up" Click="OnUp" MinWidth="48" />
       <TextBox x:Name="FolderBox" Grid.Column="2" AutomationProperties.Name="Folder path"
-               KeyDown="OnFolderKeyDown" />
+               TextChanged="OnFolderTextChanged" LostFocus="OnFolderLostFocus" />
       <Button Grid.Column="3" Content="_New Folder" Click="OnNewFolder" />
     </Grid>
     <Grid Grid.Row="1" ColumnDefinitions="126,*" ColumnSpacing="10">
       <ListBox x:Name="Places" AutomationProperties.Name="Locations" SelectionChanged="OnPlaceChanged" />
       <Grid Grid.Column="1" RowDefinitions="Auto,*">
         <Grid Margin="9,0,9,6" ColumnDefinitions="*,82,130" ColumnSpacing="8">
-          <TextBlock Text="Name" FontWeight="SemiBold" />
-          <TextBlock Grid.Column="1" Text="Type" FontWeight="SemiBold" />
-          <TextBlock Grid.Column="2" Text="Modified" FontWeight="SemiBold" />
+          <Grid.Styles>
+            <Style Selector="Button">
+              <Setter Property="HorizontalAlignment" Value="Stretch" />
+              <Setter Property="HorizontalContentAlignment" Value="Left" />
+              <Setter Property="Padding" Value="6,3" />
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="BorderThickness" Value="0" />
+              <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+          </Grid.Styles>
+          <Button x:Name="NameHeader" Content="Name ▲" Click="OnSortEntries" IsEnabled="{Binding #AcceptButton.IsEnabled}" />
+          <Button x:Name="TypeHeader" Grid.Column="1" Content="Type" Click="OnSortEntries" IsEnabled="{Binding #AcceptButton.IsEnabled}" />
+          <Button x:Name="ModifiedHeader" Grid.Column="2" Content="Modified" Click="OnSortEntries" IsEnabled="{Binding #AcceptButton.IsEnabled}" />
         </Grid>
         <ListBox x:Name="Entries" Grid.Row="1" AutomationProperties.Name="Files and folders"
+                 AutomationProperties.HelpText="Type to select a name. Press F2 to rename the selected item."
+                 Focusable="True" IsTextSearchEnabled="True" AutoScrollToSelectedItem="True" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                  SelectionChanged="OnEntryChanged" DoubleTapped="OnEntryDoubleTapped" KeyDown="OnEntryKeyDown">
           <ListBox.Styles>
             <Style Selector="ListBoxItem">
@@ -30,7 +49,14 @@
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="local:FilePickerEntry">
               <Grid ColumnDefinitions="*,82,130" ColumnSpacing="8">
-                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                <Grid ColumnDefinitions="16,*" ColumnSpacing="7">
+                  <PathIcon Width="16" Height="16" IsVisible="{Binding IsFolder}"
+                            Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
+                            Data="M1,4 H6 L8,6 H15 V14 H1 Z" />
+                  <PathIcon Width="16" Height="16" IsVisible="{Binding !IsFolder}" Opacity="0.75"
+                            Data="M3,1 H10 L14,5 V15 H3 Z M4,2 V14 H13 V6 H9 V2 Z M10,2.5 V5 H12.5 Z" />
+                  <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                </Grid>
                 <TextBlock Grid.Column="1" Text="{Binding Kind}" TextTrimming="CharacterEllipsis" />
                 <TextBlock Grid.Column="2" Text="{Binding Modified}" TextTrimming="CharacterEllipsis" />
               </Grid>
@@ -39,24 +65,47 @@
         </ListBox>
       </Grid>
     </Grid>
-    <Grid Grid.Row="2" ColumnDefinitions="90,*,76,145" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
-      <Label Content="_File name" Target="{Binding #FileNameBox}" />
+    <Grid Grid.Row="2" ColumnDefinitions="90,*,76,166" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
+      <Label Content="_File name" Target="{Binding #FileNameBox}" Padding="0" VerticalAlignment="Center" />
       <TextBox x:Name="FileNameBox" Grid.Column="1" Grid.ColumnSpan="3" AutomationProperties.Name="File name" />
-      <Label Grid.Row="1" Content="File _type" Target="{Binding #FilterBox}" />
+      <Label Grid.Row="1" Content="File _type" Target="{Binding #FilterBox}" Padding="0" VerticalAlignment="Center" />
       <ComboBox x:Name="FilterBox" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Stretch"
                 AutomationProperties.Name="File type" SelectionChanged="OnFilterChanged">
         <ComboBoxItem Content="Text Documents (*.txt)" />
         <ComboBoxItem Content="All Files (*.*)" />
       </ComboBox>
-      <Label Grid.Row="1" Grid.Column="2" Content="_Encoding" Target="{Binding #EncodingBox}" />
+      <Label Grid.Row="1" Grid.Column="2" Content="_Encoding" Target="{Binding #EncodingBox}" Padding="0" VerticalAlignment="Center" />
       <ComboBox x:Name="EncodingBox" Grid.Row="1" Grid.Column="3" HorizontalAlignment="Stretch"
                 AutomationProperties.Name="Encoding" />
     </Grid>
     <TextBlock x:Name="Status" Grid.Row="3" TextWrapping="Wrap" IsVisible="False"
                AutomationProperties.LiveSetting="Polite" />
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button x:Name="AcceptButton" MinWidth="88" IsDefault="True" Click="OnAccept" />
-      <Button Content="Cancel" IsCancel="True" Click="OnCancel" MinWidth="88" />
-    </StackPanel>
+    <Grid Grid.Row="4" ColumnDefinitions="*,Auto">
+      <CheckBox x:Name="HiddenFilesBox" Content="Show hidden files" IsCheckedChanged="OnHiddenFilesChanged" VerticalAlignment="Center" />
+      <StackPanel Grid.Column="1" Classes="dialog-actions">
+        <Button x:Name="AcceptButton" Classes="accent" IsDefault="True" Click="OnAccept" />
+        <Button Content="Cancel" IsCancel="True" Click="OnCancel" />
+      </StackPanel>
+    </Grid>
+    <Canvas x:Name="FolderSuggestionLayer" Grid.RowSpan="5" ClipToBounds="True">
+      <Border x:Name="FolderSuggestionPanel" IsVisible="False" CornerRadius="4" BorderThickness="1"
+              Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+              BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+        <ListBox x:Name="FolderSuggestions" MaxHeight="240" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 Focusable="False" Tapped="OnFolderSuggestionTapped" AutomationProperties.Name="Suggested folders">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="Focusable" Value="False" />
+              <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            </Style>
+          </ListBox.Styles>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="x:String">
+              <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Border>
+    </Canvas>
   </Grid>
 </Window>

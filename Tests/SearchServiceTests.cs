@@ -4,12 +4,50 @@ using NotepadAvalonia.Models;
 using NotepadAvalonia.Services;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Xunit;
 
 namespace Notepad.Tests;
 
 public class SearchServiceTests
 {
+    [AvaloniaFact]
+    public void RegexFindReplace_MatchesMixedLineEndingsAndExpandsReplacementEscapes()
+    {
+        var editor = new NeoEditor { Text = "end\r\nstart end\nstart end\rstart" };
+        var settings = new SearchSettings { SearchString = @"(end)(?:\r\n|\n|\r)(start)", ReplaceString = @"$2\r\n$1", UseRegex = true };
+        var service = new SearchService();
+        var (first, _) = service.FindNext(editor, settings);
+        Assert.NotNull(first);
+        Assert.Equal(10, first.Length);
+        Assert.Equal(3, service.ReplaceAll(editor, settings));
+        Assert.Equal("start\r\nend start\r\nend start\r\nend", editor.Text);
+        editor.Undo();
+        Assert.Equal("end\r\nstart end\nstart end\rstart", editor.Text);
+    }
+
+    [Fact]
+    public void PreviewMatches_UsesOriginalRegexContextAndStopsAtViewportEnd()
+    {
+        const string text = "key:word key:word key:word";
+        var settings = new SearchSettings { SearchString = "(?<=key:)word", UseRegex = true };
+        var matches = SearchService.FindPreviewMatches(text, settings, 13, 17, 100, CancellationToken.None);
+        Assert.Equal(new[] { (113, 4) }, matches);
+
+        settings.SearchString = "(?=word)";
+        Assert.Equal(new[] { (113, 0) }, SearchService.FindPreviewMatches(text, settings, 13, 17, 100, CancellationToken.None));
+        settings.SearchString = "(";
+        Assert.Empty(SearchService.FindPreviewMatches(text, settings, 13, 17, 0, CancellationToken.None));
+    }
+
+    [Fact]
+    public void PreviewMatches_PreservesUnicodeMatchLengthAndWholeWord()
+    {
+        const string text = "caf\u00e9 cafe\u0301 cafe\u0301ine";
+        var settings = new SearchSettings { SearchString = "caf\u00e9", WholeWord = true };
+        Assert.Equal(new[] { (5, 5) }, SearchService.FindPreviewMatches(text, settings, 7, text.Length, 0, CancellationToken.None));
+    }
+
     private static NeoEditor CreateEditor(string text)
     {
         var editor = new NeoEditor();
@@ -52,6 +90,87 @@ public class SearchServiceTests
             Assert.Null(service.FindNext(editor, new() { SearchString = "ab" }).result);
             Assert.Equal(1, service.ReplaceAll(editor, new() { SearchString = "\0", ReplaceString = "-" }));
             Assert.Equal("I i \u0131 \u0130 a-b", editor.Text);
+        }
+        finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("\u034F")]
+    [InlineData("\uFE0F")]
+    [InlineData("\U000E0001")]
+    [InlineData("\U000E0100")]
+    public void LiteralSearch_PreservesUnrequestedInvisibleTextAndFindsExplicitQueries(string mark)
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+            string protectedWord = "a" + mark + "b";
+            var editor = CreateEditor("ab " + protectedWord + " ab");
+            int lastWord = 4 + protectedWord.Length;
+            var service = new SearchService();
+            var settings = new SearchSettings { SearchString = "ab", ReplaceString = "x", MatchCase = true };
+
+            editor.CaretOffset = 2;
+            Assert.Equal(new SearchResult(lastWord, 2), service.FindNext(editor, settings).result);
+            editor.CaretOffset = lastWord;
+            Assert.Equal(new SearchResult(0, 2), service.FindPrevious(editor, settings).result);
+
+            editor.SetSelection(3, protectedWord.Length);
+            Assert.Equal(0, service.ReplaceNext(editor, settings));
+            Assert.Equal(2, service.ReplaceAll(editor, settings));
+            Assert.Equal("x " + protectedWord + " x", editor.Text);
+            editor.Undo();
+            Assert.Equal("ab " + protectedWord + " ab", editor.Text);
+
+            editor.CaretOffset = 0;
+            settings.SearchString = protectedWord;
+            Assert.Equal(new SearchResult(3, protectedWord.Length), service.FindNext(editor, settings).result);
+            settings.SearchString = mark;
+            Assert.Equal(new SearchResult(4, mark.Length), service.FindNext(editor, settings).result);
+        }
+        finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [AvaloniaFact]
+    public void LiteralSearch_DoesNotLeaveAnUnrequestedVariationSelectorBehind()
+    {
+        var editor = CreateEditor("\u2764\uFE0F \u2764");
+        var service = new SearchService();
+        var settings = new SearchSettings { SearchString = "\u2764", ReplaceString = "x", MatchCase = true };
+
+        Assert.Equal(new SearchResult(3, 1), service.FindNext(editor, settings).result);
+        editor.CaretOffset = 2;
+        Assert.Null(service.FindPrevious(editor, settings).result);
+        Assert.Equal(1, service.ReplaceAll(editor, settings));
+        Assert.Equal("\u2764\uFE0F x", editor.Text);
+
+        editor.CaretOffset = 0;
+        settings.SearchString = "\u2764\uFE0F";
+        Assert.Equal(new SearchResult(0, 2), service.FindNext(editor, settings).result);
+    }
+
+    [AvaloniaTheory]
+    [InlineData("cs")]
+    [InlineData("dzs")]
+    public void FindPrevious_HungarianContractionSelectsTheFullMatch(string word)
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("hu-HU");
+            var editor = CreateEditor(word + " " + word);
+            editor.CaretOffset = editor.TextLength;
+            var service = new SearchService();
+            var settings = new SearchSettings { SearchString = word, ReplaceString = "x", WholeWord = true };
+
+            var found = Assert.IsType<SearchResult>(service.FindPrevious(editor, settings).result);
+            Assert.Equal(new SearchResult(word.Length + 1, word.Length), found);
+            editor.SetSelection(found.StartOffset, found.Length);
+            Assert.Equal(1, service.ReplaceNext(editor, settings));
+            Assert.Equal(word + " x", editor.Text);
+            editor.Undo();
+            Assert.Equal(word, editor.GetSelectedText());
         }
         finally { CultureInfo.CurrentCulture = previous; }
     }
@@ -280,5 +399,23 @@ public class SearchServiceTests
 
         Assert.Throws<RegexMatchTimeoutException>(() => new SearchService().ReplaceAll(editor, settings));
         Assert.Equal(text, editor.GetText());
+    }
+
+    [AvaloniaFact]
+    public void ReplaceNext_SlowFollowUpSearch_PreservesTheCompletedReplacement()
+    {
+        string suffix = " " + new string('a', 10_000) + "!";
+        var editor = CreateEditor("ok" + suffix);
+        editor.SetSelection(0, 2);
+        var service = new SearchService();
+        var settings = new SearchSettings { SearchString = "ok|(?<= )(a+)+$", ReplaceString = "x", UseRegex = true };
+
+        Assert.Equal(1, service.ReplaceNext(editor, settings, out bool found, out bool wrapped, out bool followUpTimedOut));
+        Assert.True(followUpTimedOut);
+        Assert.False(found);
+        Assert.False(wrapped);
+        Assert.Equal("x" + suffix, editor.Text);
+        editor.Undo();
+        Assert.Equal("ok" + suffix, editor.Text);
     }
 }

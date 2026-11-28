@@ -10,8 +10,15 @@ public class EditorSettings : ObservableObject
     private bool _windowsOnlyLineEndings;
     private bool _preservePastedLineEndings;
     private bool _rightToLeft;
-    private string _fontFamily = "Consolas";
+    private bool _showUnicodeControls;
+    private bool _showAllCharacters;
+    private string _fontFamily = DefaultFontFamily;
+    private bool _enableFontLigatures = true;
+    private bool _autoIndent;
     private int _zoomLevel = 100;
+
+    internal static string DefaultFontFamily => System.OperatingSystem.IsWindows() ? "Consolas" :
+        System.OperatingSystem.IsMacOS() ? "Menlo" : "monospace";
 
     public bool WordWrap
     {
@@ -55,6 +62,18 @@ public class EditorSettings : ObservableObject
         set => SetProperty(ref _fontFamily, value);
     }
 
+    public bool EnableFontLigatures
+    {
+        get => _enableFontLigatures;
+        set => SetProperty(ref _enableFontLigatures, value);
+    }
+
+    public bool AutoIndent
+    {
+        get => _autoIndent;
+        set => SetProperty(ref _autoIndent, value);
+    }
+
     public int ZoomLevel
     {
         get => _zoomLevel;
@@ -62,7 +81,17 @@ public class EditorSettings : ObservableObject
     }
 
     public double FontSize { get; set; } = 11;
-    public bool ShowUnicodeControls { get; set; }
+    public bool ShowUnicodeControls
+    {
+        get => _showUnicodeControls;
+        set => SetProperty(ref _showUnicodeControls, value);
+    }
+
+    public bool ShowAllCharacters
+    {
+        get => _showAllCharacters;
+        set => SetProperty(ref _showAllCharacters, value);
+    }
     public bool IsBold { get; set; }
     public bool IsItalic { get; set; }
     public int WindowX { get; set; } = 100;

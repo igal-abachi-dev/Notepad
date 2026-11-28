@@ -251,10 +251,11 @@ public class MainWindowViewModelTests
     {
         public TaskCompletionSource Release { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override async Task<LoadedFile> ReadDocumentAsync(string path, FileEncodingType? requestedEncoding = null, bool windowsOnly = false)
+        internal override async Task<LoadedFile?> ReadDocumentForEditorAsync(string path, FileEncodingType? requestedEncoding,
+            bool windowsOnly, Func<long, Task<bool>> confirmLargeFile, bool replaceInvalidBytes = false)
         {
             if (path == pathToBlock) await Release.Task;
-            return await base.ReadDocumentAsync(path, requestedEncoding, windowsOnly);
+            return await base.ReadDocumentForEditorAsync(path, requestedEncoding, windowsOnly, confirmLargeFile, replaceInvalidBytes);
         }
     }
 

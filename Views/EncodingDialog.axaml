@@ -1,20 +1,18 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="NotepadAvalonia.Views.EncodingDialog"
-        Width="320"
+        Width="348"
         SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         Title="Encoding">
-	<StackPanel Margin="12" Spacing="12">
-		<TextBlock x:Name="PromptText" />
-		<ComboBox x:Name="EncodingCombo"
-				  HorizontalAlignment="Stretch"
-				  AutomationProperties.Name="Encoding"
-				  AutomationProperties.AutomationId="EncodingOptions" />
-		<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-			<Button Content="OK" MinWidth="80" Click="OnOk" IsDefault="True" AutomationProperties.AutomationId="EncodingAccept" />
-			<Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />
-		</StackPanel>
-	</StackPanel>
+  <StackPanel Margin="16" Spacing="12" UseLayoutRounding="True">
+    <TextBlock x:Name="PromptText" TextWrapping="Wrap" />
+    <ComboBox x:Name="EncodingCombo" HorizontalAlignment="Stretch"
+              AutomationProperties.Name="Encoding" AutomationProperties.AutomationId="EncodingOptions" />
+    <StackPanel Classes="dialog-actions">
+      <Button Content="OK" Classes="accent" Click="OnOk" IsDefault="True" AutomationProperties.AutomationId="EncodingAccept" />
+      <Button Content="Cancel" Click="OnCancel" IsCancel="True" />
+    </StackPanel>
+  </StackPanel>
 </Window>

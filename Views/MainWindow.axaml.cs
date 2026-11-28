@@ -4,6 +4,7 @@ using Avalonia.Automation.Provider;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using NotepadAvalonia.ViewModels;
 using System;
@@ -24,14 +25,36 @@ public partial class MainWindow : Window
     private bool _systemCloseApproved;
     private PixelPoint _normalPosition;
     private Size _normalSize;
+    private NativeMenu? _macRecentFiles;
 
     public MainWindowViewModel ViewModel => (MainWindowViewModel)DataContext!;
 
     public MainWindow()
     {
         InitializeComponent();
+        if (OperatingSystem.IsMacOS())
+        {
+            foreach (var binding in KeyBindings.ToArray())
+            {
+                if (binding.Gesture is not { } gesture) continue;
+                if (gesture.Key == Key.Back && gesture.KeyModifiers == KeyModifiers.Alt)
+                    KeyBindings.Remove(binding);
+                else
+                    binding.Gesture = ToMacGesture(gesture);
+            }
+            NativeMenu.SetMenu(this, CreateMacMenu(EditorMenu.Items));
+            PropertyChanged += (_, e) =>
+            {
+                if (e.Property == NativeMenu.IsNativeMenuExportedProperty)
+                    EditorMenu.IsVisible = !NativeMenu.GetIsNativeMenuExported(this);
+            };
+        }
         if (OperatingSystem.IsWindows() && TryGetPlatformHandle() is { HandleDescriptor: "HWND" })
+        {
             Win32Properties.AddWndProcHookCallback(this, OnWin32Message);
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) && PlatformSettings is { } settings)
+                ConfigureMica(settings);
+        }
         DataContextChanged += OnDataContextChanged;
         PositionChanged += (_, _) => RememberPlacement();
         SizeChanged += (_, _) => RememberPlacement();
@@ -53,10 +76,77 @@ public partial class MainWindow : Window
                 UpdateInputDirection(GetKeyboardLayout(0));
                 Editor.AttachWindowsTextAutomation(this, EditorSurface);
             }
+            if (OperatingSystem.IsMacOS())
+                EditorMenu.IsVisible = !NativeMenu.GetIsNativeMenuExported(this);
             Editor.Focus();
         };
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDrop);
+    }
+
+    private void ConfigureMica(IPlatformSettings settings)
+    {
+        var solid = new[] { WindowTransparencyLevel.None };
+        var mica = new[] { WindowTransparencyLevel.Mica, WindowTransparencyLevel.None };
+
+        void UpdateChrome() => Classes.Set("mica-chrome",
+            ActualTransparencyLevel == WindowTransparencyLevel.Mica &&
+            settings.GetColorValues().ContrastPreference != ColorContrastPreference.High);
+
+        void OnColorValuesChanged(object? sender, PlatformColorValues colors)
+        {
+            TransparencyLevelHint = colors.ContrastPreference == ColorContrastPreference.High ? solid : mica;
+            UpdateChrome();
+        }
+
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ActualTransparencyLevelProperty) UpdateChrome();
+        };
+        settings.ColorValuesChanged += OnColorValuesChanged;
+        Closed += (_, _) => settings.ColorValuesChanged -= OnColorValuesChanged;
+        OnColorValuesChanged(settings, settings.GetColorValues());
+    }
+
+    internal NativeMenu CreateMacMenu(ItemCollection items)
+    {
+        var menu = new NativeMenu();
+        foreach (var entry in items)
+        {
+            if (entry is Separator)
+            {
+                menu.Items.Add(new NativeMenuItemSeparator());
+                continue;
+            }
+            if (entry is not MenuItem item || item.Header is not string header) continue;
+            if (item.InputGesture is { } gesture) item.InputGesture = ToMacGesture(gesture);
+            var nativeItem = new NativeMenuItem(header.Replace("_", "", StringComparison.Ordinal))
+            {
+                Gesture = item.InputGesture is { } shortcut && shortcut.KeyModifiers.HasFlag(KeyModifiers.Meta) ? shortcut : null,
+                ToggleType = (NativeMenuItemToggleType)item.ToggleType
+            };
+            nativeItem.Bind(NativeMenuItem.CommandProperty, item.GetObservable(MenuItem.CommandProperty));
+            nativeItem.Bind(NativeMenuItem.CommandParameterProperty, item.GetObservable(MenuItem.CommandParameterProperty));
+            nativeItem.Bind(NativeMenuItem.IsCheckedProperty, item.GetObservable(MenuItem.IsCheckedProperty));
+            nativeItem.Bind(NativeMenuItem.IsEnabledProperty, item.GetObservable(MenuItem.IsEnabledProperty));
+            nativeItem.Bind(NativeMenuItem.IsVisibleProperty, item.GetObservable(MenuItem.IsVisibleProperty));
+            if (item == RecentMenu)
+                nativeItem.Menu = _macRecentFiles = new NativeMenu();
+            else if (item.Items.Count != 0)
+                nativeItem.Menu = CreateMacMenu(item.Items);
+            menu.Items.Add(nativeItem);
+        }
+        return menu;
+    }
+
+    internal static KeyGesture ToMacGesture(KeyGesture gesture)
+    {
+        if ((gesture.KeyModifiers & KeyModifiers.Control) == 0) return gesture;
+        if (gesture.Key == Key.Y && gesture.KeyModifiers == KeyModifiers.Control)
+            return new(Key.Z, KeyModifiers.Meta | KeyModifiers.Shift);
+        if (gesture.Key == Key.H && gesture.KeyModifiers == KeyModifiers.Control)
+            return new(Key.F, KeyModifiers.Meta | KeyModifiers.Alt);
+        return new(gesture.Key, (gesture.KeyModifiers & ~KeyModifiers.Control) | KeyModifiers.Meta);
     }
 
     protected override AutomationPeer OnCreateAutomationPeer() => new MainWindowAutomationPeer(this);
@@ -128,6 +218,7 @@ public partial class MainWindow : Window
     private void OnRecentFilesChanged(object? sender, NotifyCollectionChangedEventArgs? e)
     {
         RecentMenu.Items.Clear();
+        _macRecentFiles?.Items.Clear();
         if (_viewModel == null || _viewModel.RecentFiles.Count == 0)
         {
             RecentMenu.IsEnabled = false;
@@ -144,6 +235,11 @@ public partial class MainWindow : Window
                 CommandParameter = path
             };
             RecentMenu.Items.Add(item);
+            _macRecentFiles?.Items.Add(new NativeMenuItem(path)
+            {
+                Command = item.Command,
+                CommandParameter = path
+            });
         }
     }
 

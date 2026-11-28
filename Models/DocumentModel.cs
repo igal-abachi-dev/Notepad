@@ -1,7 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using NotepadAvalonia.Services;
+using System;
 using System.IO;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace NotepadAvalonia.Models;
 
@@ -22,11 +24,17 @@ public partial class DocumentModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(WindowTitle))]
     private bool _isModified;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(WindowTitle))]
+    private bool _isReadOnlyFile;
+
     public Encoding Encoding { get; set; } = Encoding.Default;
     public FileEncodingType EncodingType { get; set; } = FileEncodingType.UTF8;
     public FileEncodingType SaveEncodingType { get; set; } = FileEncodingType.UTF8;
     public LineEndingStyle LineEnding { get; set; } = LineEndingStyle.CRLF;
     internal FileVersion? SavedFileVersion { get; set; }
+    internal string? SuggestedExtension { get; init; }
     internal DraftLease? Draft { get; set; }
     internal long DraftVersion { get; set; } = -1;
     internal long DraftSequence { get; set; }
@@ -35,10 +43,18 @@ public partial class DocumentModel : ObservableObject
         ? "Untitled"
         : Path.GetFileName(FilePath);
 
-    public string WindowTitle => $"{(IsModified ? "*" : "")}{FileName} - Notepad";
+    public string WindowTitle => $"{(IsModified ? "*" : "")}{FileName}{(IsReadOnlyFile ? " [Read-only file]" : "")} - Notepad";
 }
 
-public sealed record FileVersion(long Length, string Sha256);
+public sealed record FileVersion(long Length, string Sha256)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResolvedPath { get; init; }
+
+    // A version can still compare equal through two names for the same bytes. Save checks the destination separately.
+    public bool Equals(FileVersion? other) => other != null && Length == other.Length && Sha256 == other.Sha256;
+    public override int GetHashCode() => HashCode.Combine(Length, Sha256);
+}
 
 public enum LineEndingStyle
 {
@@ -56,5 +72,6 @@ public enum FileEncodingType
     UTF16LE = 2,     // UTF-16 Little Endian (with BOM)
     UTF16BE = 3,     // UTF-16 Big Endian (with BOM)
     UTF8BOM = 4,     // UTF-8 with BOM
-    UTF8 = 5         // UTF-8 without BOM
+    UTF8 = 5,      // UTF-8 without BOM
+    OEM437 = 6     // DOS / ANSI art
 }

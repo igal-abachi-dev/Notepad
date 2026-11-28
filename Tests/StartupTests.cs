@@ -22,6 +22,13 @@ public class StartupTests
     }
 
     [Fact]
+    public void CommandLine_PreservesAWhitespaceFilenameOnUnix()
+    {
+        var result = App.ParseStartupArguments([" ", "next.txt"]);
+        Assert.Equal(OperatingSystem.IsWindows() ? "next.txt" : " ", result.Path);
+    }
+
+    [Fact]
     public void NewWindow_StartsThePublishedExecutableWithNoInheritedArguments()
     {
         var executable = Path.GetFullPath("Notepad.exe");
